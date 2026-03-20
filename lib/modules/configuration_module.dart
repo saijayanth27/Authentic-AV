@@ -46,7 +46,7 @@ class ConfigurationModule extends StatelessWidget {
                       ),
                       child: Icon(
                         dev['type'] == 'TX' ? Icons.settings_input_component : Icons.tv,
-                        color: AppTheme.primaryTeal,
+                        color: AppTheme.primaryPurple,
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -62,7 +62,7 @@ class ConfigurationModule extends StatelessWidget {
                     ),
                     IconButton(
                       onPressed: () {},
-                      icon: const Icon(Icons.edit_note, color: AppTheme.primaryTeal),
+                      icon: const Icon(Icons.edit_note, color: AppTheme.primaryPurple),
                     ),
                   ],
                 ),

@@ -33,7 +33,7 @@ class HelpModule extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppTheme.primaryTeal)),
+          Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppTheme.primaryPurple)),
           const SizedBox(height: 8),
           Text(content, style: const TextStyle(color: AppTheme.textMain)),
         ],

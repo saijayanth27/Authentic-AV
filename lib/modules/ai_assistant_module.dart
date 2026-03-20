@@ -11,7 +11,7 @@ class AiAssistantModule extends StatefulWidget {
 
 class _AiAssistantModuleState extends State<AiAssistantModule> {
   final List<Map<String, String>> _messages = [
-    {'role': 'assistant', 'content': 'Hello! I am your Authentic AV Assistant. How can I help you today?'},
+    {'role': 'assistant', 'content': 'Hello! I am your AuthenticAV Assistant. How can I help you today?'},
   ];
   final TextEditingController _controller = TextEditingController();
 
@@ -49,7 +49,7 @@ class _AiAssistantModuleState extends State<AiAssistantModule> {
                     margin: const EdgeInsets.symmetric(vertical: 8),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: isAssistant ? Colors.white : AppTheme.primaryTeal,
+                      color: isAssistant ? Colors.white : AppTheme.primaryPurple,
                       borderRadius: BorderRadius.circular(12),
                       boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
                     ),
@@ -81,7 +81,7 @@ class _AiAssistantModuleState extends State<AiAssistantModule> {
               ),
               const SizedBox(width: 8),
               CircleAvatar(
-                backgroundColor: AppTheme.primaryTeal,
+                backgroundColor: AppTheme.primaryPurple,
                 child: IconButton(
                   icon: const Icon(Icons.send, color: Colors.white, size: 20),
                   onPressed: _sendMessage,

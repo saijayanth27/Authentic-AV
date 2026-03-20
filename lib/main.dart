@@ -12,7 +12,7 @@ class AuthenticAvApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Authentic AV',
+      title: 'AuthenticAV',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       home: const AppShell(),

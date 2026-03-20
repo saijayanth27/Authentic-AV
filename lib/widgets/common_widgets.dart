@@ -57,7 +57,7 @@ class AvCard extends StatelessWidget {
           color: Colors.white,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: isSelected ? AppTheme.primaryTeal : AppTheme.borderLight,
+            color: isSelected ? AppTheme.primaryPurple : AppTheme.borderLight,
             width: isSelected ? 2 : 1,
           ),
           boxShadow: [

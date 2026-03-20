@@ -57,7 +57,7 @@ class _DiscoveryModuleState extends State<DiscoveryModule> {
                   : const Icon(Icons.refresh, size: 18),
                 label: Text(_isScanning ? 'Scanning...' : 'Start Scan'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.primaryTeal,
+                  backgroundColor: AppTheme.primaryPurple,
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                 ),
               ),
@@ -81,7 +81,7 @@ class _DiscoveryModuleState extends State<DiscoveryModule> {
                           color: AppTheme.backgroundLight,
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: const Icon(Icons.settings_input_component, color: AppTheme.primaryTeal),
+                        child: const Icon(Icons.settings_input_component, color: AppTheme.primaryPurple),
                       ),
                       const SizedBox(width: 20),
                       Expanded(
@@ -105,8 +105,8 @@ class _DiscoveryModuleState extends State<DiscoveryModule> {
                       OutlinedButton(
                         onPressed: () {},
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: AppTheme.primaryTeal),
-                          foregroundColor: AppTheme.primaryTeal,
+                          side: const BorderSide(color: AppTheme.primaryPurple),
+                          foregroundColor: AppTheme.primaryPurple,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                         ),
                         child: const Text('Adopt Device'),

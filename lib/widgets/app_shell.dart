@@ -33,11 +33,11 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    List<Map<String, dynamic>> visibleItems = _isAdminMode 
-        ? _allNavItems 
+    final List<Map<String, dynamic>> visibleItems = _isAdminMode
+        ? _allNavItems
         : _allNavItems.where((item) => item['adminOnly'] != true).toList();
 
-    // Ensure _selectedIndex is within bounds if isAdminMode changes
+    // Ensure _selectedIndex is within bounds when admin mode changes
     if (_selectedIndex >= visibleItems.length) {
       _selectedIndex = 0;
     }
@@ -49,16 +49,16 @@ class _AppShellState extends State<AppShell> {
         title: Row(
           children: [
             Container(
-              width: 40,
-              height: 40,
+              width: 48,
+              height: 48,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: AppTheme.primaryTeal,
-                borderRadius: BorderRadius.circular(8),
+                color: AppTheme.primaryPurple,
+                borderRadius: BorderRadius.circular(10),
               ),
               child: const Text(
                 'A',
-                style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
               ),
             ),
             const SizedBox(width: 12),
@@ -68,12 +68,12 @@ class _AppShellState extends State<AppShell> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'Authentic AV', 
+                    'AuthenticAV',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     overflow: TextOverflow.ellipsis,
                   ),
                   Text(
-                    'AVoIP Control System', 
+                    'AVoIP Control System',
                     style: TextStyle(fontSize: 11, color: Colors.grey),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -83,97 +83,72 @@ class _AppShellState extends State<AppShell> {
           ],
         ),
         actions: [
-          Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppTheme.primaryTeal.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _isAdminMode ? Icons.admin_panel_settings : Icons.person,
+                color: AppTheme.primaryPurple,
+                size: 18,
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Flexible(
-                    child: Text(
-                      _isAdminMode ? 'ADMIN' : 'USER',
-                      style: const TextStyle(
-                        color: AppTheme.primaryTeal,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  SizedBox(
-                    height: 24,
-                    width: 32,
-                    child: Switch(
-                      value: _isAdminMode,
-                      onChanged: (val) => setState(() => _isAdminMode = val),
-                      activeColor: AppTheme.primaryTeal,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-                ],
+              const SizedBox(width: 4),
+              Text(
+                _isAdminMode ? 'Admin' : 'User',
+                style: const TextStyle(
+                  color: AppTheme.primaryPurple,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
+              Transform.scale(
+                scale: 0.75,
+                child: Switch(
+                  value: _isAdminMode,
+                  onChanged: (val) => setState(() => _isAdminMode = val),
+                  activeColor: AppTheme.primaryPurple,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 8),
         ],
       ),
-      body: Column(
-        children: [
-          Container(
-            height: 60,
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              border: Border(bottom: BorderSide(color: Colors.black12)),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(color: AppTheme.primaryPurple),
+              child: const Center(
+                child: Text(
+                  'AuthenticAV',
+                  style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+              ),
             ),
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              itemCount: visibleItems.length,
-              itemBuilder: (context, index) {
-                bool isSelected = _selectedIndex == index;
-                var item = visibleItems[index];
-                return InkWell(
-                  onTap: () => setState(() => _selectedIndex = index),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          color: isSelected ? AppTheme.primaryTeal : Colors.transparent,
-                          width: 3,
-                        ),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(item['icon'], size: 20, color: isSelected ? AppTheme.primaryTeal : Colors.grey),
-                        const SizedBox(width: 10),
-                        Text(
-                          item['label'],
-                          style: TextStyle(
-                            color: isSelected ? AppTheme.primaryTeal : Colors.black87,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Expanded(
-            child: visibleItems[_selectedIndex]['module'],
-          ),
-        ],
+            ...List.generate(visibleItems.length, (index) {
+              final item = visibleItems[index];
+              return ListTile(
+                leading: Icon(
+                  item['icon'] as IconData,
+                  color: _selectedIndex == index ? AppTheme.primaryPurple : Colors.black54,
+                ),
+                title: Text(item['label'] as String),
+                selected: _selectedIndex == index,
+                selectedTileColor: AppTheme.primaryPurple.withValues(alpha: 0.1),
+                onTap: () {
+                  setState(() {
+                    _selectedIndex = index;
+                  });
+                  Navigator.pop(context);
+                },
+              );
+            }),
+          ],
+        ),
       ),
+      body: visibleItems[_selectedIndex]['module'] as Widget,
     );
   }
 }

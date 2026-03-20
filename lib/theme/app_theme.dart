@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const Color primaryTeal = Color(0xFF0D9488);
-  static const Color primaryTealLight = Color(0xFF14B8A6);
+  static const Color primaryPurple = Color(0xFFA855F7);
+  static const Color primaryPurpleDark = Color(0xFF7E22CE);
   
   static const Color backgroundLight = Color(0xFFF8FAFC);
   static const Color borderLight = Color(0xFFE2E8F0);
@@ -19,9 +19,9 @@ class AppTheme {
     return ThemeData(
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: primaryTeal,
-        primary: primaryTeal,
-        secondary: primaryTealLight,
+        seedColor: primaryPurple,
+        primary: primaryPurple,
+        secondary: primaryPurpleDark,
         background: backgroundLight,
       ),
       scaffoldBackgroundColor: backgroundLight,
@@ -53,7 +53,7 @@ class AppTheme {
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: primaryTeal,
+          backgroundColor: primaryPurple,
           foregroundColor: Colors.white,
           elevation: 0,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
