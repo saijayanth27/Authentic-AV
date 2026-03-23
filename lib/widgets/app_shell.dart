@@ -1,6 +1,8 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../modules/operate_module.dart';
+import '../modules/previews_module.dart';
 import '../modules/discovery_module.dart';
 import '../modules/configuration_module.dart';
 import '../modules/troubleshooting_module.dart';
@@ -8,9 +10,12 @@ import '../modules/snapshots_module.dart';
 import '../modules/help_module.dart';
 import '../modules/ai_assistant_module.dart';
 import '../modules/tests_module.dart';
+import '../modules/users_module.dart';
+import '../screens/login_screen.dart';
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  final bool isAdmin;
+  const AppShell({super.key, required this.isAdmin});
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -18,22 +23,23 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _selectedIndex = 0;
-  bool _isAdminMode = true;
 
   final List<Map<String, dynamic>> _allNavItems = [
-    {'icon': Icons.settings_input_component, 'label': 'Operate', 'module': const OperateModule()},
-    {'icon': Icons.search, 'label': 'Discovery', 'adminOnly': true, 'module': const DiscoveryModule()},
-    {'icon': Icons.settings, 'label': 'Configuration', 'adminOnly': true, 'module': const ConfigurationModule()},
-    {'icon': Icons.build, 'label': 'Troubleshooting', 'adminOnly': true, 'module': const TroubleshootingModule()},
-    {'icon': Icons.camera_alt, 'label': 'Snapshots', 'module': const SnapshotsModule()},
+    {'icon': Icons.grid_view_rounded, 'label': 'Live Previews', 'module': const PreviewsModule()},
+    {'icon': Icons.settings_input_component_outlined, 'label': 'Operate', 'module': const OperateModule()},
+    {'icon': Icons.manage_search_outlined, 'label': 'Discovery', 'adminOnly': true, 'module': const DiscoveryModule()},
+    {'icon': Icons.settings_outlined, 'label': 'Configuration', 'adminOnly': true, 'module': const ConfigurationModule()},
+    {'icon': Icons.admin_panel_settings_outlined, 'label': 'Access Control', 'adminOnly': true, 'module': const UsersModule()},
+    {'icon': Icons.build_outlined, 'label': 'Troubleshooting', 'adminOnly': true, 'module': const TroubleshootingModule()},
+    {'icon': Icons.camera_alt_outlined, 'label': 'Snapshots', 'module': const SnapshotsModule()},
     {'icon': Icons.help_outline, 'label': 'Help', 'module': const HelpModule()},
-    {'icon': Icons.auto_awesome, 'label': 'AI Assistant', 'module': const AiAssistantModule()},
-    {'icon': Icons.checklist, 'label': 'Tests', 'adminOnly': true, 'module': const TestsModule()},
+    {'icon': Icons.auto_awesome_outlined, 'label': 'AI Assistant', 'module': const AiAssistantModule()},
+    {'icon': Icons.checklist_rtl_outlined, 'label': 'Tests', 'adminOnly': true, 'module': const TestsModule()},
   ];
 
   @override
   Widget build(BuildContext context) {
-    final List<Map<String, dynamic>> visibleItems = _isAdminMode
+    final List<Map<String, dynamic>> visibleItems = widget.isAdmin
         ? _allNavItems
         : _allNavItems.where((item) => item['adminOnly'] != true).toList();
 
@@ -42,40 +48,35 @@ class _AppShellState extends State<AppShell> {
       _selectedIndex = 0;
     }
 
+    final isMobile = MediaQuery.of(context).size.width < 600;
+
     return Scaffold(
       backgroundColor: AppTheme.backgroundLight,
       appBar: AppBar(
-        toolbarHeight: 70,
+        toolbarHeight: isMobile ? 60 : 70,
+        backgroundColor: AppTheme.backgroundLight, // Sleek Pitch Black Apple TV Header
+        elevation: 0,
         title: Row(
           children: [
-            Container(
-              width: 48,
-              height: 48,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: AppTheme.primaryPurple,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Text(
-                'A',
-                style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold),
-              ),
-            ),
             const SizedBox(width: 12),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    'AuthenticAV',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    overflow: TextOverflow.ellipsis,
+                  const Text(
+                    'Authentic AV',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'New York'),
                   ),
-                  Text(
-                    'AVoIP Control System',
-                    style: TextStyle(fontSize: 11, color: Colors.grey),
-                    overflow: TextOverflow.ellipsis,
+                  const SizedBox(width: 10),
+                  Icon(Icons.chevron_right_rounded, size: 16, color: Colors.grey.shade600),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      visibleItems[_selectedIndex]['label'],
+                      style: TextStyle(fontSize: 16, color: AppTheme.accentWhite.withValues(alpha: 0.9), fontWeight: FontWeight.w500),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
@@ -87,68 +88,104 @@ class _AppShellState extends State<AppShell> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                _isAdminMode ? Icons.admin_panel_settings : Icons.person,
-                color: AppTheme.primaryPurple,
+                widget.isAdmin ? Icons.admin_panel_settings_outlined : Icons.person_outline,
+                color: AppTheme.accentWhite,
                 size: 18,
               ),
-              const SizedBox(width: 4),
-              Text(
-                _isAdminMode ? 'Admin' : 'User',
-                style: const TextStyle(
-                  color: AppTheme.primaryPurple,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
+              if (!isMobile) ...[
+                const SizedBox(width: 6),
+                Text(
+                  widget.isAdmin ? 'Admin' : 'User',
+                  style: const TextStyle(
+                    color: AppTheme.accentWhite,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-              Transform.scale(
-                scale: 0.75,
-                child: Switch(
-                  value: _isAdminMode,
-                  onChanged: (val) => setState(() => _isAdminMode = val),
-                  activeColor: AppTheme.primaryPurple,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
+              ],
+              const SizedBox(width: 12),
+              IconButton(
+                icon: const Icon(Icons.logout_outlined, color: AppTheme.accentWhite, size: 20),
+                tooltip: 'Logout',
+                onPressed: () {
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (context) => const LoginScreen()),
+                  );
+                },
               ),
             ],
           ),
           const SizedBox(width: 8),
         ],
-      ),
+      ), // closes AppBar
       drawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
+        backgroundColor: AppTheme.backgroundLight,
+        child: Column(
           children: [
-            DrawerHeader(
-              decoration: BoxDecoration(color: AppTheme.primaryPurple),
-              child: const Center(
-                child: Text(
-                  'AuthenticAV',
-                  style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+            const SizedBox(height: 60),
+            const Padding(
+              padding: EdgeInsets.only(left: 20, bottom: 20),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Authentic AV',
+                      style: TextStyle(color: AppTheme.accentWhite, fontSize: 20, fontWeight: FontWeight.bold, fontFamily: 'New York'),
+                    ),
+                    Text(
+                      'Experience Control',
+                      style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                    ),
+                  ],
                 ),
               ),
             ),
-            ...List.generate(visibleItems.length, (index) {
-              final item = visibleItems[index];
-              return ListTile(
-                leading: Icon(
-                  item['icon'] as IconData,
-                  color: _selectedIndex == index ? AppTheme.primaryPurple : Colors.black54,
-                ),
-                title: Text(item['label'] as String),
-                selected: _selectedIndex == index,
-                selectedTileColor: AppTheme.primaryPurple.withValues(alpha: 0.1),
-                onTap: () {
-                  setState(() {
-                    _selectedIndex = index;
-                  });
-                  Navigator.pop(context);
+            Divider(color: Colors.grey.shade900, height: 1),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                itemCount: visibleItems.length,
+                itemBuilder: (context, index) {
+                  final item = visibleItems[index];
+                  final isSelected = _selectedIndex == index;
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
+                    dense: true,
+                    leading: Icon(
+                      item['icon'] as IconData,
+                      size: 20,
+                      color: isSelected ? AppTheme.accentWhite : AppTheme.textMuted,
+                    ),
+                    title: Text(
+                      item['label'] as String,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                        color: isSelected ? AppTheme.accentWhite : AppTheme.textMuted,
+                      ),
+                    ),
+                    selected: isSelected,
+                    selectedTileColor: AppTheme.highlightGrey,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    style: ListTileStyle.drawer,
+                    onTap: () {
+                      setState(() => _selectedIndex = index);
+                      Navigator.pop(context);
+                    },
+                  );
                 },
-              );
-            }),
+              ),
+            ),
           ],
         ),
       ),
-      body: visibleItems[_selectedIndex]['module'] as Widget,
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: visibleItems.map((item) => item['module'] as Widget).toList(),
+      ),
     );
   }
 }

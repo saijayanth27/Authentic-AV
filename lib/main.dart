@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'theme/app_theme.dart';
-import 'widgets/app_shell.dart';
+import 'screens/login_screen.dart';
 
 void main() {
   runApp(const AuthenticAvApp());
@@ -15,8 +15,7 @@ class AuthenticAvApp extends StatelessWidget {
       title: 'AuthenticAV',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: const AppShell(),
+      home: const LoginScreen(),
     );
   }
 }
-

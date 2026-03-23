@@ -3,13 +3,14 @@ enum DeviceType { tx, rx }
 
 class Device {
   final String id;
-  final String name;
-  final String ip;
+  String name;
+  String ip;
   final DeviceType type;
   final DeviceStatus status;
   final String? previewUrl;
-  final String location;
+  String location;
   final List<String> tags;
+  final String? videoUrl; // Add unique video route feed
 
   Device({
     required this.id,
@@ -20,5 +21,6 @@ class Device {
     this.previewUrl,
     required this.location,
     this.tags = const [],
+    this.videoUrl,
   });
 }

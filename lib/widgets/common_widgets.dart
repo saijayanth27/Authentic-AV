@@ -54,17 +54,17 @@ class AvCard extends StatelessWidget {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          color: AppTheme.highlightGrey,
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isSelected ? AppTheme.primaryPurple : AppTheme.borderLight,
-            width: isSelected ? 2 : 1,
+            color: isSelected ? AppTheme.accentWhite : Colors.transparent,
+            width: isSelected ? 3 : 0,
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
+              color: Colors.black.withValues(alpha: 0.15),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
             )
           ],
         ),

@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 import '../theme/app_theme.dart';
 import '../models/device_model.dart';
+import '../logic/app_state.dart';
+
+enum ViewMode { largeGrid, compactGrid, list }
 
 class OperateModule extends StatefulWidget {
   const OperateModule({super.key});
@@ -10,97 +14,15 @@ class OperateModule extends StatefulWidget {
 }
 
 class _OperateModuleState extends State<OperateModule> {
-  final Set<String> _selectedSourceIds = {};
-  final Set<String> _selectedDestinationIds = {};
-  final Map<String, String?> _activeRoutes = {}; // destinationId -> sourceId
-  String _searchQuery = '';
-  String _activeTagFilter = 'All';
+  ViewMode _viewMode = ViewMode.largeGrid;
+
+  Map<String, String?> get _activeRoutes => AppState.instance.activeRoutes;
+  List<Device> get _sources => AppState.instance.sources;
+  Map<String, List<Device>> get _destinationsByLocation => AppState.instance.destinationsByLocation;
+
+  final Map<String, VideoPlayerController> _destControllers = {};
+  final Map<String, VideoPlayerController> _sourcePreviewControllers = {};
   final Map<String, bool> _expandedLocations = {};
-
-  // ── Sources ──────────────────────────────────────────────────────────────
-  final List<Device> _sources = [
-    Device(
-      id: 'tx1',
-      name: 'ESPN Feed',
-      ip: '192.168.1.101',
-      type: DeviceType.tx,
-      status: DeviceStatus.online,
-      location: 'Equipment Room',
-      tags: ['ESPN'],
-      previewUrl: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=400&q=80',
-    ),
-    Device(
-      id: 'tx2',
-      name: 'YouTube TV',
-      ip: '192.168.1.103',
-      type: DeviceType.tx,
-      status: DeviceStatus.online,
-      location: 'Equipment Room',
-      tags: ['YOUTUBE'],
-      previewUrl: 'https://images.unsplash.com/photo-1574717024653-61fd2cf4d44d?w=400&q=80',
-    ),
-    Device(
-      id: 'tx3',
-      name: 'Apple TV 4K',
-      ip: '192.168.1.104',
-      type: DeviceType.tx,
-      status: DeviceStatus.online,
-      location: 'Equipment Room',
-      tags: ['APPLE'],
-      previewUrl: 'https://images.unsplash.com/photo-1621768216002-5ac171661f1b?w=400&q=80',
-    ),
-    Device(
-      id: 'tx4',
-      name: 'HDMI Input 1',
-      ip: '192.168.1.104',
-      type: DeviceType.tx,
-      status: DeviceStatus.online,
-      location: 'Equipment Room',
-      tags: ['HDMI'],
-      previewUrl: 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&q=80',
-    ),
-    Device(
-      id: 'tx5',
-      name: 'Netflix',
-      ip: '192.168.1.102',
-      type: DeviceType.tx,
-      status: DeviceStatus.online,
-      location: 'Equipment Room',
-      tags: ['NETFLIX'],
-      previewUrl: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=400&q=80',
-    ),
-  ];
-
-  // ── Destinations by location ──────────────────────────────────────────────
-  final Map<String, List<Device>> _destinationsByLocation = {
-    'Main Bar': [
-      Device(id: 'rx1', name: 'Bar Display 1', ip: '192.168.1.201', type: DeviceType.rx, status: DeviceStatus.online, location: 'Main Bar'),
-      Device(id: 'rx2', name: 'Bar Display 2', ip: '192.168.1.202', type: DeviceType.rx, status: DeviceStatus.online, location: 'Main Bar'),
-    ],
-    'Lobby': [
-      Device(id: 'rx3', name: 'Lobby Screen', ip: '192.168.1.203', type: DeviceType.rx, status: DeviceStatus.online, location: 'Lobby'),
-    ],
-    'Outdoor Patio': [
-      Device(id: 'rx4', name: 'Patio Display', ip: '192.168.1.204', type: DeviceType.rx, status: DeviceStatus.online, location: 'Outdoor Patio'),
-    ],
-  };
-
-  List<String> get _allTags {
-    final tags = <String>{'All'};
-    for (final s in _sources) {
-      tags.addAll(s.tags);
-    }
-    return tags.toList();
-  }
-
-  List<Device> get _filteredSources {
-    return _sources.where((s) {
-      final matchesSearch = s.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-          s.ip.contains(_searchQuery);
-      final matchesTag = _activeTagFilter == 'All' || s.tags.contains(_activeTagFilter);
-      return matchesSearch && matchesTag;
-    }).toList();
-  }
 
   List<Device> get _allDestinations =>
       _destinationsByLocation.values.expand((d) => d).toList();
@@ -108,277 +30,234 @@ class _OperateModuleState extends State<OperateModule> {
   @override
   void initState() {
     super.initState();
+    AppState.instance.initializeSampleData();
+
     for (final loc in _destinationsByLocation.keys) {
       _expandedLocations[loc] = true;
     }
+
+    // Initialize source preview controllers for the bottom sheet
+    for (final s in _sources) {
+      if (s.videoUrl != null) {
+        final ctrl = VideoPlayerController.asset(s.videoUrl!);
+        _sourcePreviewControllers[s.id] = ctrl;
+        ctrl.initialize().then((_) {
+          if (mounted) setState(() {});
+          ctrl.setLooping(true);
+          ctrl.setVolume(0);
+          ctrl.play();
+        }).catchError((e) { debugPrint('Preview video error: $e'); return null; });
+      }
+    }
+
+    // Restore existing destination videos if they are routed
+    _syncDestControllers();
+    AppState.instance.stateVersionNotifier.addListener(_syncDestControllers);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
+  void _syncDestControllers() {
+    for (final dest in _allDestinations) {
+      final routeId = _activeRoutes[dest.id];
+      if (routeId != null) {
+        final source = _sources.firstWhere((s) => s.id == routeId, orElse: () => _sources.first);
+        if (source.videoUrl != null && _destControllers[dest.id] == null) {
+          final ctrl = VideoPlayerController.asset(source.videoUrl!);
+          _destControllers[dest.id] = ctrl;
+          ctrl.initialize().then((_) {
+            if (mounted) setState(() {});
+            ctrl.setLooping(true);
+            ctrl.setVolume(0);
+            ctrl.play();
+          });
+        }
+      } else {
+        _destControllers[dest.id]?.dispose();
+        _destControllers.remove(dest.id);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    AppState.instance.stateVersionNotifier.removeListener(_syncDestControllers);
+    for (var ctrl in _destControllers.values) {
+      ctrl.dispose();
+    }
+    for (var ctrl in _sourcePreviewControllers.values) {
+      ctrl.dispose();
+    }
+    super.dispose();
+  }
+
+  void _changeRoute(String destId, String sourceId) {
+    setState(() {
+      _activeRoutes[destId] = sourceId;
+      
+      final source = _sources.firstWhere((s) => s.id == sourceId);
+      if (source.videoUrl != null) {
+        _destControllers[destId]?.dispose();
+        final ctrl = VideoPlayerController.asset(source.videoUrl!);
+        _destControllers[destId] = ctrl;
+        ctrl.initialize().then((_) {
+          if (mounted) setState(() {});
+          ctrl.setLooping(true);
+          ctrl.setVolume(0);
+          ctrl.play();
+        }).catchError((e) { debugPrint('Video error: $e'); return null; });
+      } else {
+        _destControllers[destId]?.dispose();
+        _destControllers.remove(destId);
+      }
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.bolt_rounded, color: Colors.black, size: 20),
+            const SizedBox(width: 10),
+            Text('Matrix command executed instantly.', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        backgroundColor: Colors.greenAccent.shade400,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return ValueListenableBuilder<int>(
+      valueListenable: AppState.instance.stateVersionNotifier,
+      builder: (context, _, child) {
+        final isMobile = MediaQuery.of(context).size.width < 600;
+        return Column(
+          children: [
+            _buildControlHeader(isMobile),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.all(isMobile ? 12 : 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _destinationsByLocation.entries.map((entry) {
+                    return _buildLocationGroup(entry.key, entry.value, isMobile);
+                  }).toList(),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildControlHeader(bool isMobile) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.backgroundLight,
+        border: Border(bottom: BorderSide(color: Colors.grey.shade900)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Expanded(
+            child: Text(
+              'Displays',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Container(
+            decoration: BoxDecoration(
+              color: AppTheme.highlightGrey,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade800),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                _buildStep1(), // Sources first
-                const SizedBox(height: 28),
-                _buildStep2(), // Destinations second
+                _viewModeCapsule(ViewMode.largeGrid, Icons.grid_view_rounded),
+                Container(width: 1, height: 16, color: Colors.grey.shade800),
+                _viewModeCapsule(ViewMode.compactGrid, Icons.grid_on_rounded),
+                Container(width: 1, height: 16, color: Colors.grey.shade800),
+                _viewModeCapsule(ViewMode.list, Icons.view_list_rounded),
               ],
             ),
           ),
-        ),
-        if (_selectedSourceIds.isNotEmpty || _selectedDestinationIds.isNotEmpty)
-          _buildRoutingFooter(),
-      ],
-    );
-  }
-
-  // ── Step 1 ────────────────────────────────────────────────────────────────
-  Widget _buildStep1() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildStepHeader(
-          '1',
-          'Select Sources',
-          'Choose one or more video sources (${_selectedSourceIds.length} selected)',
-        ),
-        const SizedBox(height: 14),
-        // Search bar
-        SizedBox(
-          height: 40,
-          child: TextField(
-            onChanged: (v) => setState(() => _searchQuery = v),
-            decoration: InputDecoration(
-              hintText: 'Search sources...',
-              hintStyle: const TextStyle(fontSize: 13, color: Colors.grey),
-              prefixIcon: const Icon(Icons.search, size: 18, color: Colors.grey),
-              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: Colors.grey.shade300),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(color: Colors.grey.shade300),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        // Tag filter chips
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: _allTags.map((tag) {
-              final isActive = _activeTagFilter == tag;
-              return Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: GestureDetector(
-                  onTap: () => setState(() => _activeTagFilter = tag),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: isActive ? AppTheme.primaryPurple : Colors.white,
-                      border: Border.all(
-                        color: isActive ? AppTheme.primaryPurple : Colors.grey.shade300,
-                      ),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      tag,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: isActive ? Colors.white : Colors.black87,
-                      ),
-                    ),
+          const SizedBox(width: 12),
+          isMobile 
+            ? InkWell(
+                onTap: _showAddDestinationDialog,
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentWhite,
+                    borderRadius: BorderRadius.circular(12),
                   ),
+                  child: const Icon(Icons.add, color: Colors.black, size: 20),
                 ),
-              );
-            }).toList(),
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Source cards grid
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 200,
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 0.72,
-          ),
-          itemCount: _filteredSources.length,
-          itemBuilder: (context, i) {
-            final src = _filteredSources[i];
-            return _buildSourceCard(src);
-          },
-        ),
-      ],
+              )
+            : ElevatedButton.icon(
+                onPressed: _showAddDestinationDialog,
+                icon: const Icon(Icons.add_circle_outline, size: 16),
+                label: const Text('Add Display', style: TextStyle(fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.accentWhite,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+        ],
+      ),
     );
   }
 
-  Widget _buildSourceCard(Device source) {
-    final isSelected = _selectedSourceIds.contains(source.id);
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          if (isSelected) {
-            _selectedSourceIds.remove(source.id);
-          } else {
-            _selectedSourceIds.add(source.id);
-          }
-        });
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
+  Widget _viewModeCapsule(ViewMode mode, IconData icon) {
+    final isSelected = _viewMode == mode;
+    return InkWell(
+      onTap: () => setState(() => _viewMode = mode),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isSelected ? Colors.grey.shade800 : Colors.transparent,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? AppTheme.primaryPurple : Colors.grey.shade200,
-            width: isSelected ? 2 : 1,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Thumbnail
-            ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
-              child: source.previewUrl != null
-                  ? Image.network(
-                      source.previewUrl!,
-                      height: 90,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _placeholderThumb(height: 90),
-                      loadingBuilder: (_, child, progress) =>
-                          progress == null ? child : _placeholderThumb(height: 90),
-                    )
-                  : _placeholderThumb(height: 90),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // TX badge + status dot
-                  Row(
-                    children: [
-                      _deviceTypeBadge('TX'),
-                      const Spacer(),
-                      _statusDot(source.status),
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    source.name,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Icon(Icons.location_on, size: 11, color: Colors.grey.shade500),
-                      const SizedBox(width: 2),
-                      Expanded(
-                        child: Text(
-                          source.location,
-                          style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 1),
-                  Text(
-                    source.ip,
-                    style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
-                  ),
-                  const SizedBox(height: 5),
-                  Wrap(
-                    spacing: 4,
-                    children: source.tags.map((tag) => _tagChip(tag)).toList(),
-                  ),
-                ],
-              ),
-            ),
-          ],
+        child: Icon(
+          icon,
+          size: 18,
+          color: isSelected ? AppTheme.accentWhite : Colors.grey.shade600,
         ),
       ),
     );
   }
 
-  Widget _placeholderThumb({double height = 90}) => Container(
-        height: height,
-        width: double.infinity,
-        color: Colors.grey.shade200,
-        child: Icon(Icons.tv, size: 32, color: Colors.grey.shade400),
-      );
-
-  // ── Step 2 ────────────────────────────────────────────────────────────────
-  Widget _buildStep2() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildStepHeader(
-          '2',
-          'Select Destinations',
-          'Choose one or more displays (${_selectedDestinationIds.length} selected)',
-        ),
-        const SizedBox(height: 14),
-        // Location accordions
-        ..._destinationsByLocation.entries.map((entry) {
-          return _buildLocationGroup(entry.key, entry.value);
-        }),
-        const SizedBox(height: 20),
-        // Destination previews
-        _buildDestinationPreviews(),
-      ],
-    );
-  }
-
-  Widget _buildLocationGroup(String location, List<Device> devices) {
+  Widget _buildLocationGroup(String location, List<Device> devices, bool isMobile) {
     final isExpanded = _expandedLocations[location] ?? true;
-    final selectedCount = devices.where((d) => _selectedDestinationIds.contains(d.id)).length;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey.shade200),
+        color: AppTheme.highlightGrey,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
       ),
       child: Column(
         children: [
-          // Header row
           InkWell(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             onTap: () => setState(() => _expandedLocations[location] = !isExpanded),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               child: Row(
                 children: [
                   Text(
                     location,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                   const SizedBox(width: 8),
                   Container(
@@ -389,23 +268,9 @@ class _OperateModuleState extends State<OperateModule> {
                     ),
                     child: Text(
                       '${devices.length} display${devices.length == 1 ? '' : 's'}',
-                      style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+                      style: TextStyle(fontSize: 11, color: Colors.grey.shade700, fontWeight: FontWeight.bold),
                     ),
                   ),
-                  if (selectedCount > 0) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: AppTheme.primaryPurple.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '$selectedCount selected',
-                        style: TextStyle(fontSize: 11, color: AppTheme.primaryPurple, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ],
                   const Spacer(),
                   Icon(
                     isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
@@ -419,18 +284,25 @@ class _OperateModuleState extends State<OperateModule> {
             const Divider(height: 1),
             Padding(
               padding: const EdgeInsets.all(12),
-              child: GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 200,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                  childAspectRatio: 1.4,
-                ),
-                itemCount: devices.length,
-                itemBuilder: (ctx, i) => _buildDestCard(devices[i]),
-              ),
+              child: _viewMode != ViewMode.list
+                  ? GridView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: _viewMode == ViewMode.largeGrid ? 260 : 160,
+                        crossAxisSpacing: isMobile ? 12 : 16,
+                        mainAxisSpacing: isMobile ? 12 : 16,
+                        mainAxisExtent: _viewMode == ViewMode.largeGrid ? 200 : 150,
+                      ),
+                      itemCount: devices.length,
+                      itemBuilder: (ctx, i) => _buildGridCard(devices[i]),
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: devices.length,
+                      itemBuilder: (ctx, i) => _buildListCard(devices[i]),
+                    ),
             ),
           ],
         ],
@@ -438,413 +310,402 @@ class _OperateModuleState extends State<OperateModule> {
     );
   }
 
-  Widget _buildDestCard(Device device) {
-    final isSelected = _selectedDestinationIds.contains(device.id);
+  Widget _buildGridCard(Device dest) {
+    final activeSourceId = _activeRoutes[dest.id];
+    final activeSource = activeSourceId != null ? 
+        _sources.cast<Device?>().firstWhere((s) => s?.id == activeSourceId, orElse: () => null) : null;
+
     return GestureDetector(
-      onTap: () {
-        setState(() {
-          if (isSelected) {
-            _selectedDestinationIds.remove(device.id);
-          } else {
-            _selectedDestinationIds.add(device.id);
-          }
-        });
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
+      onTap: () => _showSourceSelectionSheet(dest),
+      child: Container(
         decoration: BoxDecoration(
-          color: isSelected ? AppTheme.primaryPurple.withValues(alpha: 0.06) : Colors.grey.shade50,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: isSelected ? AppTheme.primaryPurple : Colors.grey.shade200,
-            width: isSelected ? 2 : 1,
-          ),
-          boxShadow: isSelected ? [
+          color: Colors.grey.shade900,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.grey.shade800, width: 2),
+          boxShadow: [
             BoxShadow(
-              color: AppTheme.primaryPurple.withValues(alpha: 0.2),
-              blurRadius: 8,
-              spreadRadius: 1,
-            )
-          ] : [],
-        ),
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                _deviceTypeBadge('RX'),
-                const Spacer(),
-                _statusDot(device.status),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              device.name,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 2),
-            Row(
-              children: [
-                Icon(Icons.location_on, size: 10, color: Colors.grey.shade400),
-                const SizedBox(width: 2),
-                Expanded(
-                  child: Text(
-                    device.location,
-                    style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 1),
-            Text(
-              device.ip,
-              style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+              color: Colors.black.withValues(alpha: 0.3),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildDestinationPreviews() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Destination Previews',
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Current routing status for all displays',
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-        ),
-        const SizedBox(height: 12),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 200,
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 1.1,
-          ),
-          itemCount: _allDestinations.length,
-          itemBuilder: (ctx, i) {
-            final dest = _allDestinations[i];
-            final isActive = _selectedDestinationIds.contains(dest.id);
-            return Container(
-              decoration: BoxDecoration(
-                  color: Colors.grey.shade900,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isActive ? AppTheme.primaryPurple : Colors.grey.shade800,
-                  width: 2,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.3),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Column(
+            children: [
+              Expanded(
+                child: _buildVideoPreview(dest, activeSource),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: Column(
+              Container(
+                color: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
                   children: [
                     Expanded(
-                      child: _buildMonitorContent(dest),
-                    ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            dest.name,
+                            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2),
+                          Row(
                             children: [
-                              Text(
-                                dest.name,
-                                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              Text(
-                                dest.location,
-                                style: TextStyle(color: Colors.grey.shade400, fontSize: 10),
-                                overflow: TextOverflow.ellipsis,
+                              Icon(Icons.cast_connected, size: 10, color: Colors.grey.shade400),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  activeSource?.name ?? 'No Source Selected',
+                                  style: TextStyle(
+                                    color: activeSource != null ? Colors.greenAccent : Colors.grey.shade600, 
+                                    fontSize: 11, 
+                                    fontWeight: activeSource != null ? FontWeight.bold : FontWeight.normal
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ),
                             ],
                           ),
-                        ),
-                        Text(
-                          'ID',
-                          style: TextStyle(color: Colors.grey.shade500, fontSize: 10),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                    ElevatedButton(
+                      onPressed: () => _showSourceSelectionSheet(dest),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.highlightGrey,
+                        foregroundColor: AppTheme.accentWhite,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        minimumSize: const Size(0, 0),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                      child: const Text('Change', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        },
+            ],
+          ),
+        ),
       ),
-      ],
     );
   }
 
-  Widget _buildMonitorContent(Device dest) {
-    final routedSourceId = _activeRoutes[dest.id];
-    final routedSource = routedSourceId != null ? _sources.firstWhere((s) => s.id == routedSourceId) : null;
+  Widget _buildListCard(Device dest) {
+    final activeSourceId = _activeRoutes[dest.id];
+    final activeSource = activeSourceId != null ? 
+        _sources.cast<Device?>().firstWhere((s) => s?.id == activeSourceId, orElse: () => null) : null;
 
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          width: 80,
+          height: 50,
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade800),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(7),
+            child: _buildVideoPreview(dest, activeSource, showOverlay: false),
+          ),
+        ),
+        title: Text(
+          dest.name,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+        ),
+        subtitle: Row(
+          children: [
+            Icon(Icons.cast_connected, size: 12, color: Colors.grey.shade400),
+            const SizedBox(width: 4),
+            Text(
+              activeSource?.name ?? 'No Source',
+              style: TextStyle(
+                color: activeSource != null ? Colors.greenAccent : Colors.grey.shade600,
+                fontSize: 12,fontWeight: activeSource != null ? FontWeight.bold : FontWeight.normal
+              ),
+            ),
+          ],
+        ),
+        trailing: ElevatedButton(
+          onPressed: () => _showSourceSelectionSheet(dest),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.highlightGrey,
+            foregroundColor: AppTheme.accentWhite,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          ),
+          child: const Text('Select Source', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVideoPreview(Device dest, Device? routedSource, {bool showOverlay = true}) {
     if (routedSource != null) {
       return Stack(
         fit: StackFit.expand,
         children: [
-          routedSource.previewUrl != null
-              ? Image.network(
-                  routedSource.previewUrl!,
+          (_destControllers[dest.id] != null && _destControllers[dest.id]!.value.isInitialized)
+              ? FittedBox(
                   fit: BoxFit.cover,
+                  child: SizedBox(
+                    width: _destControllers[dest.id]!.value.size.width,
+                    height: _destControllers[dest.id]!.value.size.height,
+                    child: VideoPlayer(_destControllers[dest.id]!),
+                  ),
                 )
-              : Container(color: Colors.black),
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black.withValues(alpha: 0.4),
-                  Colors.transparent,
-                  Colors.black.withValues(alpha: 0.6),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            top: 6,
-            left: 6,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              : Container(
+                  color: Colors.black,
+                  child: Center(
+                    child: (_destControllers[dest.id] != null && _destControllers[dest.id]!.value.hasError)
+                        ? Icon(Icons.broken_image_outlined, color: Colors.grey.shade800, size: 32)
+                        : const CircularProgressIndicator(color: AppTheme.accentWhite, strokeWidth: 2),
+                  ),
+                ),
+          if (showOverlay)
+            Container(
               decoration: BoxDecoration(
-                color: AppTheme.primaryPurple,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                routedSource.name,
-                style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.6),
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.2),
+                  ],
+                ),
               ),
             ),
-          ),
-          const Center(
-            child: Icon(Icons.play_circle_outline, color: Colors.white70, size: 30),
-          ),
         ],
       );
     }
 
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.grey.shade800,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(9)),
-      ),
-      child: Stack(
-        children: [
-          Center(
-            child: Icon(Icons.monitor, size: 36, color: Colors.grey.shade600),
-          ),
-          Positioned(
-            top: 6,
-            left: 6,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.green.shade700,
-                borderRadius: BorderRadius.circular(4),
+      color: Colors.grey.shade900,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.monitor_outlined, size: 24, color: Colors.grey.shade700),
+            if (showOverlay) ...[
+              const SizedBox(height: 4),
+              Text(
+                'NO SIGNAL',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 10, fontWeight: FontWeight.bold),
               ),
-              child: const Text(
-                'rx online',
-                style: TextStyle(color: Colors.white, fontSize: 9),
-              ),
-            ),
-          ),
-          Center(
-            child: Text(
-              'NO SIGNAL',
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.1), fontSize: 10, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Step 3 Footer ─────────────────────────────────────────────────────────
-  Widget _buildRoutingFooter() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey.shade200)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.1),
-            blurRadius: 10,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '${_selectedSourceIds.length} source(s) selected',
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w400, color: Colors.grey),
-                ),
-                Text(
-                  'Targeting ${_selectedDestinationIds.length} display(s)',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-          TextButton(
-            onPressed: () => setState(() {
-              _selectedSourceIds.clear();
-              _selectedDestinationIds.clear();
-            }),
-            style: TextButton.styleFrom(foregroundColor: Colors.grey.shade600),
-            child: const Text('Cancel'),
-          ),
-          const SizedBox(width: 12),
-          ElevatedButton(
-            onPressed: (_selectedSourceIds.isNotEmpty && _selectedDestinationIds.isNotEmpty)
-                ? () {
-                    setState(() {
-                      final firstSourceId = _selectedSourceIds.first;
-                      for (final destId in _selectedDestinationIds) {
-                        _activeRoutes[destId] = firstSourceId;
-                      }
-                      _selectedSourceIds.clear();
-                      _selectedDestinationIds.clear();
-                    });
-
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Row(
-                          children: [
-                            Icon(Icons.check_circle, color: Colors.white, size: 20),
-                            SizedBox(width: 10),
-                            Text('Routing updated successfully!'),
-                          ],
-                        ),
-                        backgroundColor: Colors.green.shade700,
-                        behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
-                    );
-                  }
-                : null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primaryPurple,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              elevation: 4,
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('Confirm Route', style: TextStyle(fontWeight: FontWeight.bold)),
-                SizedBox(width: 8),
-                Icon(Icons.arrow_forward_rounded, size: 18),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ── Shared helpers ────────────────────────────────────────────────────────
-  Widget _buildStepHeader(String step, String title, String subtitle) {
-    return Row(
-      children: [
-        CircleAvatar(
-          radius: 13,
-          backgroundColor: AppTheme.primaryPurple,
-          child: Text(step, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+            ],
+          ],
         ),
-        const SizedBox(width: 10),
-        Expanded(
+      ),
+    );
+  }
+
+  // ── Source Selection Bottom Sheet ─────────────────────────────────────────
+
+  void _showSourceSelectionSheet(Device destination) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.75,
+          decoration: BoxDecoration(
+            color: AppTheme.backgroundLight,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            border: Border.all(color: Colors.grey.shade800),
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-              Text(subtitle, style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                decoration: BoxDecoration(
+                  border: Border(bottom: BorderSide(color: Colors.grey.shade900)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Select Source', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.accentWhite)),
+                        Text('Routing to ${destination.name}', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                      ],
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.grey),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 220,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      mainAxisExtent: 140,
+                    ),
+                    itemCount: _sources.length,
+                    itemBuilder: (context, i) {
+                      final src = _sources[i];
+                      return _buildSourceOptionCard(src, destination, ctx);
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSourceOptionCard(Device source, Device destination, BuildContext modalContext) {
+    final isSelected = _activeRoutes[destination.id] == source.id;
+    
+    return GestureDetector(
+      onTap: () {
+        _changeRoute(destination.id, source.id);
+        Navigator.pop(modalContext);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        decoration: BoxDecoration(
+          color: AppTheme.highlightGrey,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? Colors.greenAccent : Colors.grey.shade800,
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              (_sourcePreviewControllers[source.id] != null && _sourcePreviewControllers[source.id]!.value.isInitialized)
+                  ? FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _sourcePreviewControllers[source.id]!.value.size.width,
+                        height: _sourcePreviewControllers[source.id]!.value.size.height,
+                        child: VideoPlayer(_sourcePreviewControllers[source.id]!),
+                      ),
+                    )
+                  : Container(color: Colors.black54),
+              Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.6),
+                      Colors.black.withValues(alpha: 0.4),
+                      Colors.black.withValues(alpha: 0.8),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (isSelected) 
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: Colors.greenAccent, borderRadius: BorderRadius.circular(4)),
+                        child: const Text('ACTIVE', style: TextStyle(color: Colors.black, fontSize: 8, fontWeight: FontWeight.bold)),
+                      ),
+                    const Spacer(),
+                    Text(
+                      source.name,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      source.location,
+                      style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
-      ],
-    );
-  }
-
-  Widget _deviceTypeBadge(String type) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        type,
-        style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.black54),
       ),
     );
   }
 
-  Widget _statusDot(DeviceStatus status) {
-    Color color;
-    switch (status) {
-      case DeviceStatus.online:
-        color = Colors.green;
-        break;
-      case DeviceStatus.warning:
-        color = Colors.orange;
-        break;
-      case DeviceStatus.offline:
-        color = Colors.red;
-        break;
-      case DeviceStatus.pending:
-        color = Colors.blue;
-        break;
-    }
-    return Container(
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-    );
-  }
+  // ── Provisioning Dialogs ──────────────────────────────────────────────────
 
-  Widget _tagChip(String tag) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.blueGrey.shade50,
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Colors.blueGrey.shade200),
-      ),
-      child: Text(
-        tag,
-        style: TextStyle(fontSize: 9, color: Colors.blueGrey.shade700, fontWeight: FontWeight.w600),
+  void _showAddDestinationDialog() {
+    final nameCtrl = TextEditingController();
+    final ipCtrl = TextEditingController();
+    final locCtrl = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.backgroundLight,
+        title: const Text('Provision Display', style: TextStyle(color: AppTheme.accentWhite)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Display Name', labelStyle: TextStyle(color: Colors.grey))),
+            TextField(controller: ipCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'IP Address', labelStyle: TextStyle(color: Colors.grey))),
+            TextField(controller: locCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Location Group', labelStyle: TextStyle(color: Colors.grey))),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accentWhite, foregroundColor: Colors.black),
+            onPressed: () {
+              if (nameCtrl.text.isNotEmpty && locCtrl.text.isNotEmpty) {
+                final loc = locCtrl.text;
+                final newDevice = Device(
+                  id: 'dest_${DateTime.now().millisecondsSinceEpoch}',
+                  name: nameCtrl.text,
+                  ip: ipCtrl.text,
+                  type: DeviceType.rx,
+                  status: DeviceStatus.online,
+                  location: loc,
+                );
+                
+                if (!AppState.instance.destinationsByLocation.containsKey(loc)) {
+                  AppState.instance.destinationsByLocation[loc] = [];
+                  _expandedLocations[loc] = true;
+                }
+                AppState.instance.destinationsByLocation[loc]!.add(newDevice);
+                AppState.instance.notifyListeners();
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text('Provision'),
+          ),
+        ],
       ),
     );
   }
