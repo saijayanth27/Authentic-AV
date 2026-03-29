@@ -3,6 +3,7 @@ import 'package:video_player/video_player.dart';
 import '../theme/app_theme.dart';
 import '../models/device_model.dart';
 import '../logic/app_state.dart';
+import 'operate_module.dart' show ViewMode;
 
 class PreviewsModule extends StatefulWidget {
   const PreviewsModule({super.key});
@@ -14,8 +15,13 @@ class PreviewsModule extends StatefulWidget {
 class _PreviewsModuleState extends State<PreviewsModule> {
   final Map<String, VideoPlayerController> _destControllers = {};
 
+  final Map<String, bool> _expandedLocations = {};
+  ViewMode _viewMode = ViewMode.largeGrid;
+
   List<Device> get _allDestinations =>
       AppState.instance.destinationsByLocation.values.expand((d) => d).toList();
+  Map<String, List<Device>> get _destinationsByLocation =>
+      AppState.instance.destinationsByLocation;
   List<Device> get _sources => AppState.instance.sources;
   Map<String, String?> get _activeRoutes => AppState.instance.activeRoutes;
 
@@ -23,6 +29,9 @@ class _PreviewsModuleState extends State<PreviewsModule> {
   void initState() {
     super.initState();
     AppState.instance.initializeSampleData();
+    for (final loc in _destinationsByLocation.keys) {
+      _expandedLocations[loc] = true;
+    }
 
     // Setup active routes if none exist to show live video on previews
     if (AppState.instance.activeRoutes.isEmpty) {
@@ -43,15 +52,28 @@ class _PreviewsModuleState extends State<PreviewsModule> {
       final routeId = _activeRoutes[dest.id];
       if (routeId != null) {
         final source = _sources.firstWhere((s) => s.id == routeId, orElse: () => _sources.first);
-        if (source.videoUrl != null && _destControllers[dest.id] == null) {
-          final ctrl = VideoPlayerController.asset(source.videoUrl!);
-          _destControllers[dest.id] = ctrl;
-          ctrl.initialize().then((_) {
-            if (mounted) setState(() {});
-            ctrl.setLooping(true);
-            ctrl.setVolume(0);
-            ctrl.play();
-          });
+        if (source.videoUrl != null) {
+          if (_destControllers[dest.id] == null) {
+            final url = source.videoUrl!;
+            final ctrl = url.startsWith('http')
+                ? VideoPlayerController.networkUrl(Uri.parse(url), videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true))
+                : VideoPlayerController.asset(url, videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true));
+            _destControllers[dest.id] = ctrl;
+            ctrl.initialize().then((_) {
+              if (mounted) setState(() {});
+              ctrl.setLooping(true);
+              ctrl.setVolume(0);
+              ctrl.play();
+            });
+          } else {
+            // Already exists, just ensure it's still playing
+            final ctrl = _destControllers[dest.id]!;
+            if (ctrl.value.isInitialized && !ctrl.value.isPlaying) {
+              try {
+                ctrl.play();
+              } catch (_) {}
+            }
+          }
         }
       } else {
         _destControllers[dest.id]?.dispose();
@@ -93,104 +115,323 @@ class _PreviewsModuleState extends State<PreviewsModule> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Live Previews',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Real-time video feed of all destination displays.',
-          style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-        ),
+        _buildControlHeader(isMobile),
         const SizedBox(height: 20),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 320,
-            crossAxisSpacing: isMobile ? 12 : 16,
-            mainAxisSpacing: isMobile ? 12 : 16,
-            mainAxisExtent: 210,
-          ),
-          itemCount: _allDestinations.length,
-          itemBuilder: (ctx, i) {
-            final dest = _allDestinations[i];
-            return Container(
-              decoration: BoxDecoration(
-                color: Colors.grey.shade900,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.grey.shade800, width: 2),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.3),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
+        ..._destinationsByLocation.entries.map((entry) {
+          return _buildLocationGroup(entry.key, entry.value, isMobile);
+        }).toList(),
+      ],
+    );
+  }
+
+  Widget _buildLocationGroup(String location, List<Device> devices, bool isMobile) {
+    final isExpanded = _expandedLocations[location] ?? true;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: AppTheme.highlightGrey,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => setState(() => _expandedLocations[location] = !isExpanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  Text(
+                    location,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${devices.length} display${devices.length == 1 ? '' : 's'}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                    color: Colors.grey,
                   ),
                 ],
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: _buildMonitorContent(dest),
-                    ),
-                    Container(
-                      color: Colors.black,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  dest.name,
-                                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                Text(
-                                  dest.location,
-                                  style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade900.withValues(alpha: 0.5),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  width: 6,
-                                  height: 6,
-                                  decoration: const BoxDecoration(
-                                    color: Colors.greenAccent,
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                                const SizedBox(width: 4),
-                                const Text(
-                                  'LIVE',
-                                  style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+            ),
+          ),
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: _viewMode != ViewMode.list
+                  ? GridView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: _viewMode == ViewMode.largeGrid ? 320 : 160,
+                        crossAxisSpacing: isMobile ? 12 : 16,
+                        mainAxisSpacing: isMobile ? 12 : 16,
+                        mainAxisExtent: _viewMode == ViewMode.largeGrid ? 210 : 180,
                       ),
+                      itemCount: devices.length,
+                      itemBuilder: (ctx, i) {
+                        return _buildGridCard(devices[i]);
+                      },
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: devices.length,
+                      itemBuilder: (ctx, i) => _buildListCard(devices[i]),
                     ),
-                  ],
-                ),
-              ),
-            );
-          },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlHeader(bool isMobile) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.backgroundLight,
+        border: Border(bottom: BorderSide(color: Colors.grey.shade900)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Expanded(
+            child: Text(
+              'Live Previews',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Container(
+            decoration: BoxDecoration(
+              color: AppTheme.highlightGrey,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.shade800),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _viewModeCapsule(ViewMode.largeGrid, Icons.grid_view_rounded),
+                Container(width: 1, height: 16, color: Colors.grey.shade800),
+                _viewModeCapsule(ViewMode.compactGrid, Icons.grid_on_rounded),
+                Container(width: 1, height: 16, color: Colors.grey.shade800),
+                _viewModeCapsule(ViewMode.list, Icons.view_list_rounded),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _viewModeCapsule(ViewMode mode, IconData icon) {
+    final isSelected = _viewMode == mode;
+    return InkWell(
+      onTap: () => setState(() => _viewMode = mode),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.grey.shade800 : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
         ),
-      ],
+        child: Icon(
+          icon,
+          size: 18,
+          color: isSelected ? Colors.white : Colors.grey.shade500,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildListCard(Device dest) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800, width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 120,
+              height: 80,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade800),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: _buildMonitorContent(dest),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          dest.name,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade900.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: Colors.greenAccent,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            const Text(
+                              'LIVE',
+                              style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Icon(Icons.location_on, size: 12, color: Colors.grey.shade500),
+                      const SizedBox(width: 4),
+                      Text(
+                        dest.location,
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGridCard(Device dest) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade800, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Column(
+          children: [
+            Expanded(
+              child: _buildMonitorContent(dest),
+            ),
+            Container(
+              color: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          dest.name,
+                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          dest.location,
+                          style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade900.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: const BoxDecoration(
+                            color: Colors.greenAccent,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Text(
+                          'LIVE',
+                          style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../modules/operate_module.dart';
@@ -8,7 +7,6 @@ import '../modules/configuration_module.dart';
 import '../modules/troubleshooting_module.dart';
 import '../modules/snapshots_module.dart';
 import '../modules/help_module.dart';
-import '../modules/ai_assistant_module.dart';
 import '../modules/tests_module.dart';
 import '../modules/users_module.dart';
 import '../screens/login_screen.dart';
@@ -33,7 +31,6 @@ class _AppShellState extends State<AppShell> {
     {'icon': Icons.build_outlined, 'label': 'Troubleshooting', 'adminOnly': true, 'module': const TroubleshootingModule()},
     {'icon': Icons.camera_alt_outlined, 'label': 'Snapshots', 'module': const SnapshotsModule()},
     {'icon': Icons.help_outline, 'label': 'Help', 'module': const HelpModule()},
-    {'icon': Icons.auto_awesome_outlined, 'label': 'AI Assistant', 'module': const AiAssistantModule()},
     {'icon': Icons.checklist_rtl_outlined, 'label': 'Tests', 'adminOnly': true, 'module': const TestsModule()},
   ];
 
@@ -124,20 +121,53 @@ class _AppShellState extends State<AppShell> {
         child: Column(
           children: [
             const SizedBox(height: 60),
-            const Padding(
-              padding: EdgeInsets.only(left: 20, bottom: 20),
-              child: Align(
-                alignment: Alignment.centerLeft,
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 20),
+              child: Center(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      'Authentic AV',
-                      style: TextStyle(color: AppTheme.accentWhite, fontSize: 20, fontWeight: FontWeight.bold, fontFamily: 'New York'),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade900,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.grey.shade800, width: 1),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.5),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const Image(
+                        image: AssetImage('assets/images/auth.av_purple-white.png'),
+                        height: 60,
+                        width: 60,
+                        fit: BoxFit.contain,
+                      ),
                     ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Authentic AV',
+                      style: TextStyle(
+                        color: AppTheme.accentWhite,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'New York',
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
                     Text(
-                      'Experience Control',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      'EXPERIENCE CONTROL',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: AppTheme.textMuted,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 2.5,
+                      ),
                     ),
                   ],
                 ),

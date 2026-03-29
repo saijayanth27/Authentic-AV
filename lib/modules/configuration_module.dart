@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 import '../logic/app_state.dart';
@@ -34,70 +33,122 @@ class _ConfigurationModuleState extends State<ConfigurationModule> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.backgroundLight,
-        title: Text('Edit ${device.type == DeviceType.tx ? 'Source' : 'Destination'}', style: const TextStyle(color: AppTheme.accentWhite)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Column(
           children: [
-            TextField(
-              controller: nameCtrl,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-              decoration: const InputDecoration(labelText: 'Device Name', labelStyle: TextStyle(color: Colors.grey)),
+            Icon(
+              device.type == DeviceType.tx ? Icons.settings_input_hdmi : Icons.monitor,
+              color: AppTheme.accentWhite,
+              size: 32,
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: ipCtrl,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-              decoration: const InputDecoration(labelText: 'IP Address', labelStyle: TextStyle(color: Colors.grey)),
+            const SizedBox(height: 12),
+            Text(
+              'Hardware Configuration', 
+              style: const TextStyle(color: AppTheme.accentWhite, fontSize: 20, fontWeight: FontWeight.bold)
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: locCtrl,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-              decoration: const InputDecoration(labelText: 'Deployment Location', labelStyle: TextStyle(color: Colors.grey)),
+            Text(
+              'Modify parameters for ${device.name}',
+              style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.normal),
             ),
           ],
         ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Divider(color: Colors.white12, height: 24),
+            TextField(
+              controller: nameCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 15),
+              decoration: InputDecoration(
+                labelText: 'Alias Name', 
+                labelStyle: const TextStyle(color: Colors.grey),
+                prefixIcon: const Icon(Icons.abc, color: Colors.white38),
+                filled: true,
+                fillColor: Colors.black26,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ipCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 15, fontFamily: 'monospace'),
+              decoration: InputDecoration(
+                labelText: 'Static IP Address', 
+                labelStyle: const TextStyle(color: Colors.grey),
+                prefixIcon: const Icon(Icons.lan_outlined, color: Colors.white38),
+                filled: true,
+                fillColor: Colors.black26,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: locCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 15),
+              decoration: InputDecoration(
+                labelText: 'Deployment Zone', 
+                labelStyle: const TextStyle(color: Colors.grey),
+                prefixIcon: const Icon(Icons.place_outlined, color: Colors.white38),
+                filled: true,
+                fillColor: Colors.black26,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+            ),
+          ],
+        ),
+        actionsPadding: const EdgeInsets.all(16),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
-          TextButton(
-            onPressed: () {
-              // Deletion phase
-              if (device.type == DeviceType.tx) {
-                AppState.instance.sources.removeWhere((s) => s.id == device.id);
-                // Sever any active routes pointing to this source
-                AppState.instance.activeRoutes.removeWhere((key, val) => val == device.id);
-              } else {
-                for (var key in AppState.instance.destinationsByLocation.keys) {
-                  AppState.instance.destinationsByLocation[key]!.removeWhere((d) => d.id == device.id);
-                }
-                // Sever any active routes attached to this destination
-                AppState.instance.activeRoutes.remove(device.id);
-              }
-              AppState.instance.notifyListeners();
-              Navigator.pop(ctx);
-              
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('${device.name} Terminated'), backgroundColor: Colors.redAccent.shade400, behavior: SnackBarBehavior.floating),
-              );
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accentWhite, foregroundColor: Colors.black),
-            onPressed: () {
-              // Apply mutations
-              device.name = nameCtrl.text.isNotEmpty ? nameCtrl.text : device.name;
-              device.ip = ipCtrl.text.isNotEmpty ? ipCtrl.text : device.ip;
-              device.location = locCtrl.text.isNotEmpty ? locCtrl.text : device.location;
-              
-              AppState.instance.notifyListeners();
-              Navigator.pop(ctx);
-              
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('${device.name} Updated'), backgroundColor: Colors.greenAccent.shade400, behavior: SnackBarBehavior.floating),
-              );
-            },
-            child: const Text('Save Config'),
+          Row(
+            children: [
+              TextButton(
+                onPressed: () {
+                  // Deletion phase
+                  if (device.type == DeviceType.tx) {
+                    AppState.instance.sources.removeWhere((s) => s.id == device.id);
+                    AppState.instance.activeRoutes.removeWhere((key, val) => val == device.id);
+                  } else {
+                    for (var key in AppState.instance.destinationsByLocation.keys) {
+                      AppState.instance.destinationsByLocation[key]!.removeWhere((d) => d.id == device.id);
+                    }
+                    AppState.instance.activeRoutes.remove(device.id);
+                  }
+                  AppState.instance.notifyListeners();
+                  Navigator.pop(ctx);
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('${device.name} Decoupled'), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
+                  );
+                },
+                child: const Text('DECOMMISSION', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('CANCEL', style: TextStyle(color: Colors.grey, fontSize: 11, fontWeight: FontWeight.bold)),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.accentWhite, 
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  elevation: 0,
+                ),
+                onPressed: () {
+                  device.name = nameCtrl.text.isNotEmpty ? nameCtrl.text : device.name;
+                  device.ip = ipCtrl.text.isNotEmpty ? ipCtrl.text : device.ip;
+                  device.location = locCtrl.text.isNotEmpty ? locCtrl.text : device.location;
+                  
+                  AppState.instance.notifyListeners();
+                  Navigator.pop(ctx);
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('${device.name} Configured'), backgroundColor: Colors.greenAccent, behavior: SnackBarBehavior.floating),
+                  );
+                },
+                child: const Text('SAVE', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
           ),
         ],
       ),
@@ -125,46 +176,69 @@ class _ConfigurationModuleState extends State<ConfigurationModule> {
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 400,
+                  maxCrossAxisExtent: 500,
                   crossAxisSpacing: isMobile ? 12.0 : 20.0,
                   mainAxisSpacing: isMobile ? 12.0 : 20.0,
-                  mainAxisExtent: 90, // Strict dashboard density
+                  mainAxisExtent: 110, // Increased for status bar
                 ),
                 itemCount: devices.length,
                 itemBuilder: (context, index) {
                   final dev = devices[index];
                   final isTx = dev.type == DeviceType.tx;
+                  final isOnline = dev.status == DeviceStatus.online;
                   
                   return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: AppTheme.highlightGrey,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade800),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: isOnline ? Colors.white.withValues(alpha: 0.1) : Colors.redAccent.withValues(alpha: 0.2)),
                     ),
                     child: Row(
                       children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            color: AppTheme.backgroundLight,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.grey.shade800),
-                          ),
-                          child: Center(
-                            child: dev.previewUrl != null
-                                ? Image.asset(
-                                    'assets/logos/${dev.previewUrl}',
-                                    width: 20,
-                                    height: 20,
-                                  )
-                                : Icon(
-                                    isTx ? Icons.router_outlined : Icons.tv_outlined,
-                                    color: isTx ? Colors.purpleAccent : Colors.blueAccent,
-                                    size: 20,
-                                  ),
-                          ),
+                        Stack(
+                          children: [
+                            Container(
+                              width: 52,
+                              height: 52,
+                              decoration: BoxDecoration(
+                                color: AppTheme.backgroundLight,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.white10),
+                              ),
+                              child: Center(
+                                child: (dev.previewUrl != null && dev.previewUrl!.isNotEmpty)
+                                    ? Image.asset(
+                                        'assets/images/${dev.previewUrl!}',
+                                        width: 32,
+                                        height: 32,
+                                        errorBuilder: (context, error, stackTrace) => Icon(
+                                          isTx ? Icons.settings_input_hdmi : Icons.monitor,
+                                          color: isTx ? Colors.purpleAccent : Colors.blueAccent,
+                                          size: 24,
+                                        ),
+                                      )
+                                    : Icon(
+                                        isTx ? Icons.settings_input_hdmi : Icons.monitor,
+                                        color: isTx ? Colors.purpleAccent : Colors.blueAccent,
+                                        size: 24,
+                                      ),
+                              ),
+                            ),
+                            Positioned(
+                              right: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: 14,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                  color: isOnline ? Colors.greenAccent : Colors.redAccent,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: AppTheme.highlightGrey, width: 2),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(width: 16),
                         Expanded(
@@ -177,38 +251,65 @@ class _ConfigurationModuleState extends State<ConfigurationModule> {
                                   Expanded(
                                     child: Text(
                                       dev.name, 
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppTheme.accentWhite),
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: AppTheme.accentWhite),
                                       maxLines: 1, 
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
                                   const SizedBox(width: 8),
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                     decoration: BoxDecoration(
-                                      color: isTx ? Colors.purpleAccent.withValues(alpha: 0.1) : Colors.blueAccent.withValues(alpha: 0.1),
-                                      borderRadius: BorderRadius.circular(4),
+                                      color: isTx ? Colors.purpleAccent.withValues(alpha: 0.15) : Colors.blueAccent.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(6),
                                     ),
-                                    child: Text(isTx ? 'TX' : 'RX', style: TextStyle(color: isTx ? Colors.purpleAccent : Colors.blueAccent, fontSize: 9, fontWeight: FontWeight.bold)),
+                                    child: Text(
+                                      isTx ? 'TX' : 'RX', 
+                                      style: TextStyle(
+                                        color: isTx ? Colors.purpleAccent : Colors.blueAccent, 
+                                        fontSize: 10, 
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5,
+                                      )
+                                    ),
                                   ),
                                 ],
                               ),
-                              const SizedBox(height: 2),
+                              const SizedBox(height: 6),
                               Row(
                                 children: [
-                                  const Icon(Icons.hub_outlined, size: 12, color: Colors.grey),
-                                  const SizedBox(width: 4),
-                                  Expanded(child: Text(dev.ip, style: TextStyle(color: Colors.grey.shade400, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                  Icon(Icons.lan_outlined, size: 14, color: Colors.grey.shade500),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    dev.ip, 
+                                    style: TextStyle(
+                                      color: Colors.grey.shade400, 
+                                      fontSize: 13,
+                                      fontFamily: 'monospace',
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Text(
+                                    isOnline ? 'ONLINE' : 'OFFLINE',
+                                    style: TextStyle(
+                                      color: isOnline ? Colors.greenAccent.withValues(alpha: 0.7) : Colors.redAccent.withValues(alpha: 0.7),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ],
                           ),
                         ),
-                        const SizedBox(width: 10),
                         IconButton(
                           onPressed: () => _showEditDeviceDialog(dev),
-                          icon: const Icon(Icons.edit_note_rounded, color: AppTheme.accentWhite, size: 24),
-                          tooltip: 'Configure Hardware',
+                          icon: const Icon(Icons.tune_rounded, color: Colors.white70, size: 22),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.white.withValues(alpha: 0.05),
+                            padding: const EdgeInsets.all(8),
+                          ),
+                          tooltip: 'Hardware Parameters',
                         ),
                       ],
                     ),

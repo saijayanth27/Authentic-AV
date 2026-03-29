@@ -52,7 +52,7 @@ class AppState extends ChangeNotifier {
         status: DeviceStatus.online,
         location: 'AV Rack 1',
         tags: ['Movies', 'Streaming'],
-        videoUrl: 'assets/videos/v1.mp4',
+        videoUrl: 'assets/videos/demo_video_1.mp4',
         previewUrl: 'netflix.png',
       ),
       Device(
@@ -63,7 +63,7 @@ class AppState extends ChangeNotifier {
         status: DeviceStatus.online,
         location: 'AV Rack 1',
         tags: ['Live Stream', 'Streaming'],
-        videoUrl: 'assets/videos/v2.mp4',
+        videoUrl: 'assets/videos/demo_video_2.mp4',
         previewUrl: 'youtube.png',
       ),
       Device(
@@ -71,22 +71,22 @@ class AppState extends ChangeNotifier {
         name: 'Hulu Live TV',
         ip: '192.168.1.103',
         type: DeviceType.tx,
-        status: DeviceStatus.warning,
+        status: DeviceStatus.online,
         location: 'Breakroom AV',
         tags: ['Live TV', 'Streaming'],
-        videoUrl: 'assets/videos/v3.mp4',
-        previewUrl: 'hulu.png',
+        videoUrl: 'assets/videos/demo_video_3.mp4',
+        previewUrl: 'hdmi.png',
       ),
       Device(
         id: 's4',
-        name: 'Twitch Studio Stream',
+        name: 'Twitch Studio',
         ip: '192.168.1.104',
         type: DeviceType.tx,
         status: DeviceStatus.online,
         location: 'Server Room',
         tags: ['Gaming', 'Live Stream'],
-        videoUrl: 'assets/videos/v4.mp4',
-        previewUrl: 'twitch.png',
+        videoUrl: 'assets/videos/demo_video_4.mp4',
+        previewUrl: 'auth.av_icon_v2.png',
       ),
       Device(
         id: 's5',
@@ -95,20 +95,20 @@ class AppState extends ChangeNotifier {
         type: DeviceType.tx,
         status: DeviceStatus.online,
         location: 'Theater Room',
-        videoUrl: 'assets/videos/v5.mp4',
+        videoUrl: 'assets/videos/demo_video_5.mp4',
         tags: ['Movies', 'Streaming'],
-        previewUrl: 'disneyplus.png',
+        previewUrl: 'auth.av_icon_v2.png',
       ),
       Device(
         id: 's6',
-        name: 'Prime Video',
+        name: 'Apple TV 4K',
         ip: '192.168.1.106',
         type: DeviceType.tx,
         status: DeviceStatus.online,
         location: 'AV Rack 2',
-        videoUrl: 'assets/videos/v6.mp4',
+        videoUrl: 'assets/videos/demo_video_6.mp4',
         tags: ['Movies', 'Streaming'],
-        previewUrl: 'primevideo.png',
+        previewUrl: 'appletv.png',
       ),
     ]);
     
@@ -118,13 +118,21 @@ class AppState extends ChangeNotifier {
       UserAccount(id: 'u2', username: 'operator', password: '123', role: 'User'),
     ]);
 
-    destinationsByLocation['Home Network'] = [
-      Device(id: 'd1', name: 'Lobby', ip: '10.0.0.1', type: DeviceType.rx, status: DeviceStatus.online, location: 'Front', previewUrl: 'main_display.jpg'),
-      Device(id: 'd2', name: 'Kitchen', ip: '10.0.0.2', type: DeviceType.rx, status: DeviceStatus.online, location: 'House', previewUrl: 'kitchen.jpg'),
-      Device(id: 'd3', name: 'Bed Room', ip: '10.0.0.3', type: DeviceType.rx, status: DeviceStatus.online, location: 'Master', previewUrl: 'bedroom.jpg'),
-      Device(id: 'd4', name: 'Hall', ip: '10.0.0.4', type: DeviceType.rx, status: DeviceStatus.online, location: 'Corridor', previewUrl: 'hall.jpg'),
-      Device(id: 'd5', name: 'Pool', ip: '10.0.0.5', type: DeviceType.rx, status: DeviceStatus.online, location: 'Patio', previewUrl: 'pool.jpg'),
+    // Standard Demo Destinations (mapped to sources s1 and s2 for sharing stability)
+    final sampleDestinations = [
+      Device(id: 'd1', name: 'Lobby Display', ip: '192.168.1.51', type: DeviceType.rx, status: DeviceStatus.online, location: 'Guest Areas'),
+      Device(id: 'd2', name: 'Kitchen TV', ip: '192.168.1.52', type: DeviceType.rx, status: DeviceStatus.online, location: 'Guest Areas'),
+      Device(id: 'd3', name: 'Master Bed Room', ip: '192.168.1.53', type: DeviceType.rx, status: DeviceStatus.online, location: 'Private Quarters'),
+      Device(id: 'd4', name: 'Main Hall', ip: '192.168.1.54', type: DeviceType.rx, status: DeviceStatus.online, location: 'Private Quarters'),
+      Device(id: 'd5', name: 'Patio Screen', ip: '192.168.1.55', type: DeviceType.rx, status: DeviceStatus.online, location: 'Outdoor'),
     ];
+
+    for (var dest in sampleDestinations) {
+      if (!destinationsByLocation.containsKey(dest.location)) {
+        destinationsByLocation[dest.location] = [];
+      }
+      destinationsByLocation[dest.location]!.add(dest);
+    }
 
     // Standard Sample Snapshots
     if (savedSnapshots.isEmpty) {
@@ -154,21 +162,20 @@ class AppState extends ChangeNotifier {
     }
 
     // Assign default routing paths so all videos play by default
-    if (activeRoutes.isEmpty && destinationsByLocation['Home Network'] != null) {
-      final dests = destinationsByLocation['Home Network']!;
-      for (int i = 0; i < dests.length; i++) {
-        if (i < sources.length) {
-          activeRoutes[dests[i].id] = sources[i].id;
-        } else {
-          activeRoutes[dests[i].id] = sources.first.id;
-        }
+    if (activeRoutes.isEmpty) {
+      final allDests = destinationsByLocation.values.expand((element) => element).toList();
+      for (int i = 0; i < allDests.length; i++) {
+        final sourceIndex = i % sources.length;
+        activeRoutes[allDests[i].id] = sources[sourceIndex].id;
       }
     }
   }
 
   // Forces listeners to rebuild UI
+  @override
   void notifyListeners() {
     stateVersionNotifier.value++;
+    super.notifyListeners();
   }
 
   // Clear all routes

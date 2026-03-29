@@ -18,11 +18,17 @@ class _OperateModuleState extends State<OperateModule> {
 
   Map<String, String?> get _activeRoutes => AppState.instance.activeRoutes;
   List<Device> get _sources => AppState.instance.sources;
-  Map<String, List<Device>> get _destinationsByLocation => AppState.instance.destinationsByLocation;
+  Map<String, List<Device>> get _destinationsByLocation =>
+      AppState.instance.destinationsByLocation;
 
-  final Map<String, VideoPlayerController> _destControllers = {};
+  // ── Shared Source Pool (Allows multiple destinations to share 1 decoder) ──
+  final Map<String, VideoPlayerController> _sourcePool = {};
   final Map<String, VideoPlayerController> _sourcePreviewControllers = {};
   final Map<String, bool> _expandedLocations = {};
+  String? _selectedDestinationId;
+
+  // Allow all unique decoders to play simultaneously
+  bool _initQueueRunning = false;
 
   List<Device> get _allDestinations =>
       _destinationsByLocation.values.expand((d) => d).toList();
@@ -31,84 +37,159 @@ class _OperateModuleState extends State<OperateModule> {
   void initState() {
     super.initState();
     AppState.instance.initializeSampleData();
-
     for (final loc in _destinationsByLocation.keys) {
       _expandedLocations[loc] = true;
     }
-
-    // Initialize source preview controllers for the bottom sheet
-    for (final s in _sources) {
-      if (s.videoUrl != null) {
-        final ctrl = VideoPlayerController.asset(s.videoUrl!);
-        _sourcePreviewControllers[s.id] = ctrl;
-        ctrl.initialize().then((_) {
-          if (mounted) setState(() {});
-          ctrl.setLooping(true);
-          ctrl.setVolume(0);
-          ctrl.play();
-        }).catchError((e) { debugPrint('Preview video error: $e'); return null; });
-      }
-    }
-
-    // Restore existing destination videos if they are routed
+    // Initialize all source videos upfront
+    _initializeAllSources();
     _syncDestControllers();
     AppState.instance.stateVersionNotifier.addListener(_syncDestControllers);
   }
 
   void _syncDestControllers() {
-    for (final dest in _allDestinations) {
-      final routeId = _activeRoutes[dest.id];
-      if (routeId != null) {
-        final source = _sources.firstWhere((s) => s.id == routeId, orElse: () => _sources.first);
-        if (source.videoUrl != null && _destControllers[dest.id] == null) {
-          final ctrl = VideoPlayerController.asset(source.videoUrl!);
-          _destControllers[dest.id] = ctrl;
-          ctrl.initialize().then((_) {
-            if (mounted) setState(() {});
+    bool changed = false;
+
+    // Keep all active source videos playing continuously
+    // Don't dispose sources just because they're unrouted
+    final Set<String> allSourceIds = _sources.map((s) => s.id).toSet();
+
+    // Only cleanup sources that have been removed from the source list
+    final sourcesToDrop =
+        _sourcePool.keys
+            .where((srcId) => !allSourceIds.contains(srcId))
+            .toList();
+    for (final srcId in sourcesToDrop) {
+      final ctrl = _sourcePool[srcId];
+      if (ctrl != null) {
+        try {
+          ctrl.pause();
+        } catch (_) {}
+        ctrl.dispose();
+        _sourcePool.remove(srcId);
+        changed = true;
+      }
+    }
+
+    if (changed && mounted) {
+      PaintingBinding.instance.imageCache.clear();
+      setState(() {});
+    }
+    // Ensure all sources are playing
+    if (!_initQueueRunning) _runInitQueue();
+  }
+
+  Future<void> _initializeAllSources() async {
+    // Initialize all available sources for continuous playback (Concurrently)
+    for (final source in _sources) {
+      if (source.videoUrl == null) continue;
+      if (_sourcePool.containsKey(source.id)) continue;
+
+      final url = source.videoUrl!;
+      final ctrl = url.startsWith('http')
+          ? VideoPlayerController.networkUrl(Uri.parse(url), videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true))
+          : VideoPlayerController.asset(url, videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true));
+
+      _sourcePool[source.id] = ctrl;
+
+      // Start initialization without awaiting it here, so all start instantly
+      ctrl.initialize().timeout(const Duration(seconds: 15)).then((_) {
+        if (mounted) {
+          ctrl.setLooping(true);
+          ctrl.setVolume(0);
+          ctrl.play();
+          setState(() {});
+          debugPrint('✓ Playing: ${source.name}');
+        }
+      }).catchError((e) {
+        debugPrint('✗ Init fail [${source.name}]: $e');
+        try {
+          ctrl.pause();
+        } catch (_) {}
+        ctrl.dispose();
+        _sourcePool.remove(source.id);
+      });
+    }
+  }
+
+  Future<void> _runInitQueue() async {
+    if (_initQueueRunning) return;
+    _initQueueRunning = true;
+
+    try {
+      // Check all sources to ensure they're playing
+      for (final source in _sources) {
+        if (source.videoUrl == null) continue;
+
+        // Skip recreating if it already exists in the pool!
+        if (_sourcePool.containsKey(source.id)) {
+          final ctrl = _sourcePool[source.id];
+          if (ctrl != null) {
+            // If it's fully initialized but somehow paused, gently resume it
+            if (ctrl.value.isInitialized && !ctrl.value.isPlaying) {
+              try {
+                await ctrl.play();
+              } catch (_) {}
+            }
+            // Do NOT recreate the controller here!
+            continue;
+          }
+        }
+
+        final url = source.videoUrl!;
+        final ctrl = url.startsWith('http')
+            ? VideoPlayerController.networkUrl(Uri.parse(url), videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true))
+            : VideoPlayerController.asset(url, videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true));
+
+        _sourcePool[source.id] = ctrl;
+
+        // Start initialization without awaiting it here, so all start instantly
+        ctrl.initialize().timeout(const Duration(seconds: 15)).then((_) {
+          if (mounted) {
             ctrl.setLooping(true);
             ctrl.setVolume(0);
             ctrl.play();
-          });
-        }
-      } else {
-        _destControllers[dest.id]?.dispose();
-        _destControllers.remove(dest.id);
+            setState(() {});
+            debugPrint('✓ Re-playing: ${source.name}');
+          }
+        }).catchError((e) {
+          debugPrint('✗ Re-init fail [${source.name}]: $e');
+          try {
+            ctrl.pause();
+          } catch (_) {}
+          ctrl.dispose();
+          _sourcePool.remove(source.id);
+        });
       }
+    } finally {
+      _initQueueRunning = false;
     }
   }
 
   @override
   void dispose() {
     AppState.instance.stateVersionNotifier.removeListener(_syncDestControllers);
-    for (var ctrl in _destControllers.values) {
+    for (final ctrl in _sourcePool.values) {
+      try {
+        ctrl.pause();
+      } catch (_) {}
       ctrl.dispose();
     }
-    for (var ctrl in _sourcePreviewControllers.values) {
+    _sourcePool.clear();
+    for (final ctrl in _sourcePreviewControllers.values) {
+      try {
+        ctrl.pause();
+      } catch (_) {}
       ctrl.dispose();
     }
+    _sourcePreviewControllers.clear();
     super.dispose();
   }
 
   void _changeRoute(String destId, String sourceId) {
-    setState(() {
-      _activeRoutes[destId] = sourceId;
-      
-      final source = _sources.firstWhere((s) => s.id == sourceId);
-      if (source.videoUrl != null) {
-        _destControllers[destId]?.dispose();
-        final ctrl = VideoPlayerController.asset(source.videoUrl!);
-        _destControllers[destId] = ctrl;
-        ctrl.initialize().then((_) {
-          if (mounted) setState(() {});
-          ctrl.setLooping(true);
-          ctrl.setVolume(0);
-          ctrl.play();
-        }).catchError((e) { debugPrint('Video error: $e'); return null; });
-      } else {
-        _destControllers[destId]?.dispose();
-        _destControllers.remove(destId);
-      }
-    });
+    // Sharing means we don't necessarily dispose here,
+    // _syncDestControllers will handle ref-counting/cleanup
+    AppState.instance.activeRoutes[destId] = sourceId;
+    AppState.instance.notifyListeners();
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -116,7 +197,13 @@ class _OperateModuleState extends State<OperateModule> {
           children: [
             const Icon(Icons.bolt_rounded, color: Colors.black, size: 20),
             const SizedBox(width: 10),
-            Text('Matrix command executed instantly.', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            Text(
+              'Matrix command executed instantly.',
+              style: const TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ],
         ),
         backgroundColor: Colors.greenAccent.shade400,
@@ -140,9 +227,14 @@ class _OperateModuleState extends State<OperateModule> {
                 padding: EdgeInsets.all(isMobile ? 12 : 20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: _destinationsByLocation.entries.map((entry) {
-                    return _buildLocationGroup(entry.key, entry.value, isMobile);
-                  }).toList(),
+                  children:
+                      _destinationsByLocation.entries.map((entry) {
+                        return _buildLocationGroup(
+                          entry.key,
+                          entry.value,
+                          isMobile,
+                        );
+                      }).toList(),
                 ),
               ),
             ),
@@ -187,8 +279,8 @@ class _OperateModuleState extends State<OperateModule> {
             ),
           ),
           const SizedBox(width: 12),
-          isMobile 
-            ? InkWell(
+          isMobile
+              ? InkWell(
                 onTap: _showAddDestinationDialog,
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
@@ -200,15 +292,23 @@ class _OperateModuleState extends State<OperateModule> {
                   child: const Icon(Icons.add, color: Colors.black, size: 20),
                 ),
               )
-            : ElevatedButton.icon(
+              : ElevatedButton.icon(
                 onPressed: _showAddDestinationDialog,
                 icon: const Icon(Icons.add_circle_outline, size: 16),
-                label: const Text('Add Display', style: TextStyle(fontWeight: FontWeight.bold)),
+                label: const Text(
+                  'Add Display',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.accentWhite,
                   foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
               ),
         ],
@@ -236,7 +336,11 @@ class _OperateModuleState extends State<OperateModule> {
     );
   }
 
-  Widget _buildLocationGroup(String location, List<Device> devices, bool isMobile) {
+  Widget _buildLocationGroup(
+    String location,
+    List<Device> devices,
+    bool isMobile,
+  ) {
     final isExpanded = _expandedLocations[location] ?? true;
 
     return Container(
@@ -250,30 +354,44 @@ class _OperateModuleState extends State<OperateModule> {
         children: [
           InkWell(
             borderRadius: BorderRadius.circular(12),
-            onTap: () => setState(() => _expandedLocations[location] = !isExpanded),
+            onTap:
+                () =>
+                    setState(() => _expandedLocations[location] = !isExpanded),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               child: Row(
                 children: [
                   Text(
                     location,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
                   ),
                   const SizedBox(width: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.grey.shade100,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
                       '${devices.length} display${devices.length == 1 ? '' : 's'}',
-                      style: TextStyle(fontSize: 11, color: Colors.grey.shade700, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   const Spacer(),
                   Icon(
-                    isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                    isExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
                     color: Colors.grey,
                   ),
                 ],
@@ -284,25 +402,28 @@ class _OperateModuleState extends State<OperateModule> {
             const Divider(height: 1),
             Padding(
               padding: const EdgeInsets.all(12),
-              child: _viewMode != ViewMode.list
-                  ? GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: _viewMode == ViewMode.largeGrid ? 260 : 160,
-                        crossAxisSpacing: isMobile ? 12 : 16,
-                        mainAxisSpacing: isMobile ? 12 : 16,
-                        mainAxisExtent: _viewMode == ViewMode.largeGrid ? 200 : 150,
+              child:
+                  _viewMode != ViewMode.list
+                      ? GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent:
+                              _viewMode == ViewMode.largeGrid ? 260 : 160,
+                          crossAxisSpacing: isMobile ? 12 : 16,
+                          mainAxisSpacing: isMobile ? 12 : 16,
+                          mainAxisExtent:
+                              _viewMode == ViewMode.largeGrid ? 200 : 180,
+                        ),
+                        itemCount: devices.length,
+                        itemBuilder: (ctx, i) => _buildGridCard(devices[i]),
+                      )
+                      : ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: devices.length,
+                        itemBuilder: (ctx, i) => _buildListCard(devices[i]),
                       ),
-                      itemCount: devices.length,
-                      itemBuilder: (ctx, i) => _buildGridCard(devices[i]),
-                    )
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: devices.length,
-                      itemBuilder: (ctx, i) => _buildListCard(devices[i]),
-                    ),
             ),
           ],
         ],
@@ -312,20 +433,41 @@ class _OperateModuleState extends State<OperateModule> {
 
   Widget _buildGridCard(Device dest) {
     final activeSourceId = _activeRoutes[dest.id];
-    final activeSource = activeSourceId != null ? 
-        _sources.cast<Device?>().firstWhere((s) => s?.id == activeSourceId, orElse: () => null) : null;
+    final activeSource =
+        activeSourceId != null
+            ? _sources.cast<Device?>().firstWhere(
+              (s) => s?.id == activeSourceId,
+              orElse: () => null,
+            )
+            : null;
+    final isSelected = _selectedDestinationId == dest.id;
 
     return GestureDetector(
-      onTap: () => _showSourceSelectionSheet(dest),
+      onLongPress: () => _showDeleteDeviceDialog(dest),
+      onTap: () {
+        setState(() {
+          if (_selectedDestinationId == dest.id) {
+            _selectedDestinationId = null;
+          } else {
+            _selectedDestinationId = dest.id;
+          }
+        });
+      },
       child: Container(
         decoration: BoxDecoration(
           color: Colors.grey.shade900,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade800, width: 2),
+          border: Border.all(
+            color: isSelected ? Colors.greenAccent : Colors.grey.shade800,
+            width: isSelected ? 3 : 2,
+          ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 10,
+              color:
+                  isSelected
+                      ? Colors.greenAccent.withValues(alpha: 0.2)
+                      : Colors.black.withValues(alpha: 0.3),
+              blurRadius: isSelected ? 15 : 10,
               offset: const Offset(0, 4),
             ),
           ],
@@ -334,55 +476,80 @@ class _OperateModuleState extends State<OperateModule> {
           borderRadius: BorderRadius.circular(14),
           child: Column(
             children: [
-              Expanded(
-                child: _buildVideoPreview(dest, activeSource),
-              ),
+              Expanded(child: _buildVideoPreview(dest, activeSource)),
               Container(
                 color: Colors.black,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Row(
+                padding: EdgeInsets.symmetric(
+                  horizontal: _viewMode == ViewMode.compactGrid ? 4 : 16,
+                  vertical: 10,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            dest.name,
-                            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                    Text(
+                      dest.name,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: _viewMode == ViewMode.compactGrid ? 11 : 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.cast_connected,
+                          size: _viewMode == ViewMode.compactGrid ? 9 : 10,
+                          color: Colors.grey.shade400,
+                        ),
+                        const SizedBox(width: 2),
+                        Expanded(
+                          child: Text(
+                            activeSource?.name ?? 'None',
+                            style: TextStyle(
+                              color:
+                                  activeSource != null
+                                      ? Colors.greenAccent
+                                      : Colors.grey.shade600,
+                              fontSize:
+                                  _viewMode == ViewMode.compactGrid ? 10 : 11,
+                              fontWeight:
+                                  activeSource != null
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                            ),
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              Icon(Icons.cast_connected, size: 10, color: Colors.grey.shade400),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  activeSource?.name ?? 'No Source Selected',
-                                  style: TextStyle(
-                                    color: activeSource != null ? Colors.greenAccent : Colors.grey.shade600, 
-                                    fontSize: 11, 
-                                    fontWeight: activeSource != null ? FontWeight.bold : FontWeight.normal
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
+                        ),
+                      ],
+                    ),
+                    if (isSelected) ...[
+                      const SizedBox(height: 8),
+                      GestureDetector(
+                        onTap: () => _showSourceSelectionSheet(dest),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.greenAccent,
+                            borderRadius: BorderRadius.circular(6),
                           ),
-                        ],
+                          child: const Center(
+                            child: Text(
+                              'Select Source',
+                              style: TextStyle(
+                                color: Colors.black,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                    ElevatedButton(
-                      onPressed: () => _showSourceSelectionSheet(dest),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.highlightGrey,
-                        foregroundColor: AppTheme.accentWhite,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        minimumSize: const Size(0, 0),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      ),
-                      child: const Text('Change', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -395,83 +562,208 @@ class _OperateModuleState extends State<OperateModule> {
 
   Widget _buildListCard(Device dest) {
     final activeSourceId = _activeRoutes[dest.id];
-    final activeSource = activeSourceId != null ? 
-        _sources.cast<Device?>().firstWhere((s) => s?.id == activeSourceId, orElse: () => null) : null;
+    final activeSource =
+        activeSourceId != null
+            ? _sources.cast<Device?>().firstWhere(
+              (s) => s?.id == activeSourceId,
+              orElse: () => null,
+            )
+            : null;
+    final isSelected = _selectedDestinationId == dest.id;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade900,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade800),
-      ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: Container(
-          width: 80,
-          height: 50,
-          decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.shade800),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(7),
-            child: _buildVideoPreview(dest, activeSource, showOverlay: false),
+    return GestureDetector(
+      onLongPress: () => _showDeleteDeviceDialog(dest),
+      onTap: () {
+        setState(() {
+          if (_selectedDestinationId == dest.id) {
+            _selectedDestinationId = null;
+          } else {
+            _selectedDestinationId = dest.id;
+          }
+        });
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade900,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? Colors.greenAccent : Colors.grey.shade800,
+            width: isSelected ? 2 : 1,
           ),
         ),
-        title: Text(
-          dest.name,
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-        ),
-        subtitle: Row(
-          children: [
-            Icon(Icons.cast_connected, size: 12, color: Colors.grey.shade400),
-            const SizedBox(width: 4),
-            Text(
-              activeSource?.name ?? 'No Source',
-              style: TextStyle(
-                color: activeSource != null ? Colors.greenAccent : Colors.grey.shade600,
-                fontSize: 12,fontWeight: activeSource != null ? FontWeight.bold : FontWeight.normal
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 80,
+                height: 50,
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade800),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(7),
+                  child: _buildVideoPreview(
+                    dest,
+                    activeSource,
+                    showOverlay: false,
+                  ),
+                ),
               ),
-            ),
-          ],
-        ),
-        trailing: ElevatedButton(
-          onPressed: () => _showSourceSelectionSheet(dest),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppTheme.highlightGrey,
-            foregroundColor: AppTheme.accentWhite,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      dest.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: Colors.white,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.cast_connected,
+                          size: 12,
+                          color: Colors.grey.shade400,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            activeSource?.name ?? 'No Source',
+                            style: TextStyle(
+                              color:
+                                  activeSource != null
+                                      ? Colors.greenAccent
+                                      : Colors.grey.shade600,
+                              fontSize: 12,
+                              fontWeight:
+                                  activeSource != null
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (isSelected) ...[
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () => _showSourceSelectionSheet(dest),
+                  style: ElevatedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: Colors.greenAccent,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text(
+                    'Select Source',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ],
           ),
-          child: const Text('Select Source', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
         ),
       ),
     );
   }
 
-  Widget _buildVideoPreview(Device dest, Device? routedSource, {bool showOverlay = true}) {
+  void _showDeleteDeviceDialog(Device dest) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: const Text('Remove Display', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Are you sure you want to remove "${dest.name}" from ${dest.location}?',
+          style: TextStyle(color: Colors.grey.shade300),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                if (_selectedDestinationId == dest.id) _selectedDestinationId = null;
+                AppState.instance.destinationsByLocation[dest.location]?.removeWhere((d) => d.id == dest.id);
+                // Clean up empty locations if needed
+                if (AppState.instance.destinationsByLocation[dest.location]?.isEmpty ?? false) {
+                  AppState.instance.destinationsByLocation.remove(dest.location);
+                }
+                AppState.instance.stateVersionNotifier.value++;
+              });
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Removed ${dest.name}')),
+              );
+            },
+            child: const Text('Remove', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVideoPreview(
+    Device dest,
+    Device? routedSource, {
+    bool showOverlay = true,
+  }) {
+    final ctrl = (routedSource != null) ? _sourcePool[routedSource.id] : null;
+
     if (routedSource != null) {
       return Stack(
         fit: StackFit.expand,
         children: [
-          (_destControllers[dest.id] != null && _destControllers[dest.id]!.value.isInitialized)
+          (ctrl != null && ctrl.value.isInitialized)
               ? FittedBox(
-                  fit: BoxFit.cover,
-                  child: SizedBox(
-                    width: _destControllers[dest.id]!.value.size.width,
-                    height: _destControllers[dest.id]!.value.size.height,
-                    child: VideoPlayer(_destControllers[dest.id]!),
-                  ),
-                )
-              : Container(
-                  color: Colors.black,
-                  child: Center(
-                    child: (_destControllers[dest.id] != null && _destControllers[dest.id]!.value.hasError)
-                        ? Icon(Icons.broken_image_outlined, color: Colors.grey.shade800, size: 32)
-                        : const CircularProgressIndicator(color: AppTheme.accentWhite, strokeWidth: 2),
-                  ),
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: ctrl.value.size.width,
+                  height: ctrl.value.size.height,
+                  child: VideoPlayer(ctrl),
                 ),
+              )
+              : Container(
+                color: Colors.black,
+                child: Center(
+                  child:
+                      (ctrl != null && ctrl.value.hasError)
+                          ? Icon(
+                            Icons.broken_image_outlined,
+                            color: Colors.grey.shade800,
+                            size: 32,
+                          )
+                          : const CircularProgressIndicator(
+                            color: AppTheme.accentWhite,
+                            strokeWidth: 2,
+                          ),
+                ),
+              ),
           if (showOverlay)
             Container(
               decoration: BoxDecoration(
@@ -501,7 +793,11 @@ class _OperateModuleState extends State<OperateModule> {
               const SizedBox(height: 4),
               Text(
                 'NO SIGNAL',
-                style: TextStyle(color: Colors.grey.shade600, fontSize: 10, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ],
           ],
@@ -513,200 +809,496 @@ class _OperateModuleState extends State<OperateModule> {
   // ── Source Selection Bottom Sheet ─────────────────────────────────────────
 
   void _showSourceSelectionSheet(Device destination) {
+    String? pendingSourceId = _activeRoutes[destination.id];
+
+    // Note: In sharing mode, we DON'T necessarily dispose background videos anymore,
+    // as previews can share the SAME controller if already active!
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (ctx) {
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.75,
-          decoration: BoxDecoration(
-            color: AppTheme.backgroundLight,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            border: Border.all(color: Colors.grey.shade800),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                decoration: BoxDecoration(
-                  border: Border(bottom: BorderSide(color: Colors.grey.shade900)),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setModalState) {
+            // Lazy-init previews specifically for this sheet session (staggered)
+            Future.microtask(() async {
+              for (final s in _sources) {
+                if (s.videoUrl == null) continue;
+
+                // If it's already in the main pool, it's already playing!
+                if (_sourcePool.containsKey(s.id)) {
+                  _sourcePreviewControllers[s.id] = _sourcePool[s.id]!;
+                  setModalState(() {});
+                  continue;
+                }
+
+                if (_sourcePreviewControllers[s.id] == null) {
+                  final url = s.videoUrl!;
+                  final ctrl = url.startsWith('http')
+                      ? VideoPlayerController.networkUrl(Uri.parse(url), videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true))
+                      : VideoPlayerController.asset(url, videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true));
+                  _sourcePreviewControllers[s.id] = ctrl;
+                  try {
+                    await ctrl.initialize().timeout(
+                      const Duration(seconds: 10),
+                    );
+                    if (context.mounted) {
+                      setModalState(() {});
+                      await ctrl.setLooping(true);
+                      await ctrl.setVolume(0);
+                      await ctrl.play();
+                    }
+                  } catch (e) {
+                    debugPrint('Preview video error (${s.name}): $e');
+                  }
+                  await Future.delayed(const Duration(milliseconds: 1000));
+                }
+              }
+            });
+
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.75,
+              decoration: const BoxDecoration(
+                color: AppTheme.backgroundLight,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(color: Colors.grey.shade900),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Select Source', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.accentWhite)),
-                        Text('Routing to ${destination.name}', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Select Source',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.accentWhite,
+                              ),
+                            ),
+                            Text(
+                              'Routing to ${destination.name}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.grey),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
                       ],
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.grey),
-                      onPressed: () => Navigator.pop(ctx),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
-                  child: GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 220,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
-                      mainAxisExtent: 140,
-                    ),
-                    itemCount: _sources.length,
-                    itemBuilder: (context, i) {
-                      final src = _sources[i];
-                      return _buildSourceOptionCard(src, destination, ctx);
-                    },
                   ),
-                ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(16),
+                      child: GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate:
+                            const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 220,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                              mainAxisExtent: 140,
+                            ),
+                        itemCount: _sources.length,
+                        itemBuilder: (context, i) {
+                          final src = _sources[i];
+                          final isSelected = pendingSourceId == src.id;
+
+                          return GestureDetector(
+                            onTap: () {
+                              setModalState(() {
+                                pendingSourceId = src.id;
+                              });
+                            },
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 180),
+                              decoration: BoxDecoration(
+                                color: AppTheme.highlightGrey,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color:
+                                      isSelected
+                                          ? Colors.greenAccent
+                                          : Colors.grey.shade800,
+                                  width: isSelected ? 2 : 1,
+                                ),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    (_sourcePreviewControllers[src.id] !=
+                                                null &&
+                                            _sourcePreviewControllers[src.id]!
+                                                .value
+                                                .isInitialized)
+                                        ? FittedBox(
+                                          fit: BoxFit.cover,
+                                          child: SizedBox(
+                                            width:
+                                                _sourcePreviewControllers[src
+                                                        .id]!
+                                                    .value
+                                                    .size
+                                                    .width,
+                                            height:
+                                                _sourcePreviewControllers[src
+                                                        .id]!
+                                                    .value
+                                                    .size
+                                                    .height,
+                                            child: VideoPlayer(
+                                              _sourcePreviewControllers[src
+                                                  .id]!,
+                                            ),
+                                          ),
+                                        )
+                                        : Container(
+                                          color: Colors.black,
+                                          child: const Center(
+                                            child: SizedBox(
+                                              width: 20,
+                                              height: 20,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: Colors.greenAccent,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [
+                                            Colors.black.withValues(alpha: 0.6),
+                                            Colors.black.withValues(alpha: 0.4),
+                                            Colors.black.withValues(alpha: 0.8),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Checkbox(
+                                        value: isSelected,
+                                        activeColor: Colors.greenAccent,
+                                        checkColor: Colors.black,
+                                        side: const BorderSide(
+                                          color: Colors.white54,
+                                          width: 1.5,
+                                        ),
+                                        onChanged: (val) {
+                                          if (val == true) {
+                                            setModalState(() {
+                                              pendingSourceId = src.id;
+                                            });
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.all(12.0),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Spacer(),
+                                          Text(
+                                            src.name,
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            src.location,
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.grey.shade400,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      border: Border(
+                        top: BorderSide(color: Colors.grey.shade900),
+                      ),
+                    ),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed:
+                            pendingSourceId != null
+                                ? () {
+                                  _changeRoute(
+                                    destination.id,
+                                    pendingSourceId!,
+                                  );
+                                  setState(() {
+                                    _selectedDestinationId = null;
+                                  });
+                                  Navigator.pop(ctx);
+                                }
+                                : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.greenAccent,
+                          foregroundColor: Colors.black,
+                          disabledBackgroundColor: Colors.grey.shade800,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Apply Source',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
-    );
-  }
+    ).then((_) {
+      // Reclaim memory for sheet-only previews, but DO NOT dispose if sharing with main pool
+      for (final id in _sourcePreviewControllers.keys) {
+        final ctrl = _sourcePreviewControllers[id];
+        if (ctrl != null && !_sourcePool.containsValue(ctrl)) {
+          ctrl
+              .pause()
+              .then((_) => ctrl.dispose())
+              .catchError((_) => ctrl.dispose());
+        }
+      }
+      _sourcePreviewControllers.clear();
 
-  Widget _buildSourceOptionCard(Device source, Device destination, BuildContext modalContext) {
-    final isSelected = _activeRoutes[destination.id] == source.id;
-    
-    return GestureDetector(
-      onTap: () {
-        _changeRoute(destination.id, source.id);
-        Navigator.pop(modalContext);
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        decoration: BoxDecoration(
-          color: AppTheme.highlightGrey,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? Colors.greenAccent : Colors.grey.shade800,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              (_sourcePreviewControllers[source.id] != null && _sourcePreviewControllers[source.id]!.value.isInitialized)
-                  ? FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _sourcePreviewControllers[source.id]!.value.size.width,
-                        height: _sourcePreviewControllers[source.id]!.value.size.height,
-                        child: VideoPlayer(_sourcePreviewControllers[source.id]!),
-                      ),
-                    )
-                  : Container(color: Colors.black54),
-              Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.6),
-                      Colors.black.withValues(alpha: 0.4),
-                      Colors.black.withValues(alpha: 0.8),
-                    ],
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (isSelected) 
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: Colors.greenAccent, borderRadius: BorderRadius.circular(4)),
-                        child: const Text('ACTIVE', style: TextStyle(color: Colors.black, fontSize: 8, fontWeight: FontWeight.bold)),
-                      ),
-                    const Spacer(),
-                    Text(
-                      source.name,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      source.location,
-                      style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+      if (mounted) {
+        _syncDestControllers();
+        setState(() {});
+      }
+    });
   }
 
   // ── Provisioning Dialogs ──────────────────────────────────────────────────
 
   void _showAddDestinationDialog() {
     final nameCtrl = TextEditingController();
-    final ipCtrl = TextEditingController();
-    final locCtrl = TextEditingController();
-    
+    final newLocCtrl = TextEditingController();
+    final existingLocations = AppState.instance.destinationsByLocation.keys.toList();
+    String? selectedLocation = existingLocations.isNotEmpty ? existingLocations.first : null;
+    bool isCreatingNewLocation = existingLocations.isEmpty;
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.backgroundLight,
-        title: const Text('Provision Display', style: TextStyle(color: AppTheme.accentWhite)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Display Name', labelStyle: TextStyle(color: Colors.grey))),
-            TextField(controller: ipCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'IP Address', labelStyle: TextStyle(color: Colors.grey))),
-            TextField(controller: locCtrl, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: 'Location Group', labelStyle: TextStyle(color: Colors.grey))),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.accentWhite, foregroundColor: Colors.black),
-            onPressed: () {
-              if (nameCtrl.text.isNotEmpty && locCtrl.text.isNotEmpty) {
-                final loc = locCtrl.text;
-                final newDevice = Device(
-                  id: 'dest_${DateTime.now().millisecondsSinceEpoch}',
-                  name: nameCtrl.text,
-                  ip: ipCtrl.text,
-                  type: DeviceType.rx,
-                  status: DeviceStatus.online,
-                  location: loc,
-                );
-                
-                if (!AppState.instance.destinationsByLocation.containsKey(loc)) {
-                  AppState.instance.destinationsByLocation[loc] = [];
-                  _expandedLocations[loc] = true;
-                }
-                AppState.instance.destinationsByLocation[loc]!.add(newDevice);
-                AppState.instance.notifyListeners();
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Provision'),
+      builder: (ctx) => StatefulBuilder(builder: (context, setState) {
+        return AlertDialog(
+          backgroundColor: AppTheme.backgroundLight,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: Colors.grey.shade800)),
+          title: const Row(
+            children: [
+              Icon(Icons.add_to_queue, color: AppTheme.accentWhite),
+              SizedBox(width: 10),
+              Text(
+                'Provision Display',
+                style: TextStyle(color: AppTheme.accentWhite, fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ],
           ),
-        ],
-      ),
+          content: SizedBox(
+            width: 320,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Display Name',
+                    labelStyle: TextStyle(color: Colors.grey.shade400),
+                    filled: true,
+                    fillColor: Colors.black26,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                    prefixIcon: const Icon(Icons.monitor, color: Colors.grey),
+                  ),
+                ),
+                if (existingLocations.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(child: Container(height: 1, color: Colors.grey.shade800)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Text(
+                          'LOCATION',
+                          style: TextStyle(color: Colors.grey.shade500, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      Expanded(child: Container(height: 1, color: Colors.grey.shade800)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                ] else const SizedBox(height: 16),
+                if (!isCreatingNewLocation && existingLocations.isNotEmpty) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: selectedLocation,
+                        dropdownColor: AppTheme.highlightGrey,
+                        isExpanded: true,
+                        icon: const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                        items: existingLocations.map((loc) {
+                          return DropdownMenuItem(
+                            value: loc,
+                            child: Text(loc, style: const TextStyle(color: Colors.white)),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          setState(() => selectedLocation = val);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: () => setState(() => isCreatingNewLocation = true),
+                      icon: const Icon(Icons.add, size: 14, color: AppTheme.accentWhite),
+                      label: const Text('Create New Location', style: TextStyle(color: AppTheme.accentWhite, fontSize: 12)),
+                      style: TextButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  TextField(
+                    controller: newLocCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: 'New Location Name',
+                      labelStyle: TextStyle(color: Colors.grey.shade400),
+                      filled: true,
+                      fillColor: Colors.black26,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      prefixIcon: const Icon(Icons.meeting_room, color: Colors.grey),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  if (existingLocations.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () => setState(() => isCreatingNewLocation = false),
+                        icon: const Icon(Icons.list, size: 14, color: Colors.grey),
+                        label: Text('Select Existing', style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+                        style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                      ),
+                    ),
+                ],
+              ],
+            ),
+          ),
+          actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.accentWhite,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              onPressed: () {
+                final loc = isCreatingNewLocation ? newLocCtrl.text.trim() : selectedLocation;
+                if (nameCtrl.text.trim().isNotEmpty && loc != null && loc.isNotEmpty) {
+                  final newDevice = Device(
+                    id: 'dest_${DateTime.now().millisecondsSinceEpoch}',
+                    name: nameCtrl.text.trim(),
+                    ip: '192.168.1.xxx', // Auto-generated/mocked
+                    type: DeviceType.rx,
+                    status: DeviceStatus.online,
+                    location: loc,
+                  );
+
+                  if (!AppState.instance.destinationsByLocation.containsKey(loc)) {
+                    AppState.instance.destinationsByLocation[loc] = [];
+                    _expandedLocations[loc] = true;
+                  }
+                  AppState.instance.destinationsByLocation[loc]!.add(newDevice);
+                  AppState.instance.notifyListeners();
+                  Navigator.pop(ctx);
+                }
+              },
+              child: const Text('Provision', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      }),
     );
   }
 }
