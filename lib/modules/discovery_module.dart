@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:math';
 import '../theme/app_theme.dart';
+import '../logic/app_state.dart';
+import '../models/device_model.dart';
+import '../services/node_query_service.dart';
+import '../services/database_service.dart';
 
-enum DeviceType { rx, tx, unknown }
+// Using global DeviceType from models/device_model.dart
 enum AdoptStatus { pending, adopting, adopted }
 
 class DiscoveredDevice {
@@ -32,22 +36,17 @@ class DiscoveryModule extends StatefulWidget {
 class _DiscoveryModuleState extends State<DiscoveryModule>
     with TickerProviderStateMixin {
   bool _isScanning = false;
+  String _scanStatus = '';
   String _filterType = 'All';
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
 
-  final List<DiscoveredDevice> _devices = [
-    DiscoveredDevice(name: 'AV-RX-Lobby', ip: '192.168.1.50', mac: '00:1A:2B:3C:4D:5E', signal: 87, type: DeviceType.rx),
-    DiscoveredDevice(name: 'AV-TX-Rack1', ip: '192.168.1.51', mac: '00:1A:2B:3C:4D:5F', signal: 62, type: DeviceType.tx),
-    DiscoveredDevice(name: 'AV-RX-Kitchen', ip: '192.168.1.52', mac: '00:1A:2B:3C:4D:60', signal: 95, type: DeviceType.rx, status: AdoptStatus.adopted),
-    DiscoveredDevice(name: 'AV-TX-Server', ip: '192.168.1.53', mac: '00:1A:2B:3C:4D:61', signal: 44, type: DeviceType.tx),
-    DiscoveredDevice(name: 'Unknown Device', ip: '192.168.1.54', mac: '00:1A:2B:3C:4D:62', signal: 30, type: DeviceType.unknown),
-  ];
+  final List<DiscoveredDevice> _devices = [];
 
   List<DiscoveredDevice> get _filteredDevices {
     if (_filterType == 'RX') return _devices.where((d) => d.type == DeviceType.rx).toList();
     if (_filterType == 'TX') return _devices.where((d) => d.type == DeviceType.tx).toList();
-    if (_filterType == 'Unknown') return _devices.where((d) => d.type == DeviceType.unknown).toList();
+    if (_filterType == 'CX') return _devices.where((d) => d.type == DeviceType.cx).toList();
     return _devices;
   }
 
@@ -57,6 +56,65 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
     _pulseCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))
       ..repeat(reverse: true);
     _pulseAnim = CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut);
+    _loadFromDatabase();
+  }
+
+  // ── Load last scan results from DB on app open ─────────────────────────────
+  Future<void> _loadFromDatabase() async {
+    final rows = await DatabaseService.instance.loadDiscoveredDevices();
+    if (!mounted || rows.isEmpty) return;
+
+    // Build set of already-adopted device IDs (mac-based)
+    final adoptedIds = {
+      ...AppState.instance.sources.map((d) => d.id),
+      ...AppState.instance.destinationsByLocation.values.expand((d) => d).map((d) => d.id),
+    };
+
+    setState(() {
+      for (final row in rows) {
+        final ip = row['ip'] as String;
+        if (_devices.any((d) => d.ip == ip)) continue;
+        final mac = row['mac'] as String;
+        final deviceId = mac.replaceAll(':', '');
+        _devices.add(DiscoveredDevice(
+          name: row['name'] as String,
+          ip: ip,
+          mac: mac,
+          signal: (row['signal'] as int?) ?? 100,
+          type: DeviceType.values.firstWhere(
+            (e) => e.name == (row['type'] as String),
+            orElse: () => DeviceType.rx,
+          ),
+          status: adoptedIds.contains(deviceId) ? AdoptStatus.adopted : AdoptStatus.pending,
+        ));
+      }
+    });
+  }
+
+  // ── Mark already-adopted devices after every scan ─────────────────────────
+  void _restoreAdoptedStatus() {
+    final adoptedIds = {
+      ...AppState.instance.sources.map((d) => d.id),
+      ...AppState.instance.destinationsByLocation.values.expand((d) => d).map((d) => d.id),
+    };
+    for (final device in _devices) {
+      final deviceId = device.mac.replaceAll(':', '');
+      if (adoptedIds.contains(deviceId)) {
+        device.status = AdoptStatus.adopted;
+      }
+    }
+  }
+
+  // ── Save scan results to DB after every scan ───────────────────────────────
+  Future<void> _saveToDatabase(List<DiscoveredDevice> devices) async {
+    final maps = devices.map((d) => {
+      'name': d.name,
+      'ip': d.ip,
+      'mac': d.mac,
+      'signal': d.signal,
+      'type': d.type.name,
+    }).toList();
+    await DatabaseService.instance.saveDiscoveredDevices(maps);
   }
 
   @override
@@ -66,28 +124,186 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
   }
 
   void _startScan() async {
-    setState(() => _isScanning = true);
-    await Future.delayed(const Duration(seconds: 3));
+    setState(() {
+      _isScanning = true;
+      _scanStatus = 'Detecting network...';
+      _devices.clear();
+    });
+
+    final found = await NodeQueryService.discover(
+      onStatus: (status) {
+        if (mounted) setState(() => _scanStatus = status);
+      },
+    );
+
     if (!mounted) return;
-    // Simulate finding a new device
+
+    final previousCount = _devices.length;
     setState(() {
       _isScanning = false;
-      if (!_devices.any((d) => d.ip == '192.168.1.55')) {
-        _devices.add(DiscoveredDevice(
-          name: 'AV-RX-Pool',
-          ip: '192.168.1.55',
-          mac: '00:1A:2B:3C:4D:63',
-          signal: 71,
-          type: DeviceType.rx,
-        ));
+      _scanStatus = '';
+      for (final device in found) {
+        if (!_devices.any((d) => d.ip == device.ip)) {
+          _devices.add(device);
+        }
       }
+      _restoreAdoptedStatus();
     });
+
+    if (found.isNotEmpty) await _saveToDatabase(found);
+    if (mounted) _showScanResultPopup(found, previousCount);
+  }
+
+  void _showScanResultPopup(List<DiscoveredDevice> found, int previousCount) {
+    final newDevices = found.where((d) {
+      final id = d.mac.replaceAll(':', '');
+      final adoptedIds = {
+        ...AppState.instance.sources.map((s) => s.id),
+        ...AppState.instance.destinationsByLocation.values.expand((l) => l).map((s) => s.id),
+      };
+      return !adoptedIds.contains(id);
+    }).toList();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: const BoxDecoration(
+          color: Color(0xFF1A1A1A),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 20),
+            // Result icon
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: found.isEmpty ? Colors.orange.withValues(alpha: 0.1) : Colors.greenAccent.withValues(alpha: 0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                found.isEmpty ? Icons.wifi_off_rounded : Icons.radar_rounded,
+                color: found.isEmpty ? Colors.orangeAccent : Colors.greenAccent,
+                size: 32,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              found.isEmpty ? 'No Devices Found' : 'Scan Complete',
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+            ),
+            const SizedBox(height: 8),
+            if (found.isEmpty)
+              Text(
+                'Make sure your phone is on the\nsame WiFi as your AV devices.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+              )
+            else ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _resultChip('${found.length} Total', Colors.blue),
+                  const SizedBox(width: 8),
+                  _resultChip('${newDevices.length} New', Colors.greenAccent),
+                  const SizedBox(width: 8),
+                  _resultChip('${found.length - newDevices.length} Adopted', Colors.purple),
+                ],
+              ),
+              if (newDevices.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('New Devices Found', style: TextStyle(color: Colors.grey.shade400, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+                const SizedBox(height: 8),
+                ...newDevices.take(3).map((d) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    children: [
+                      Icon(d.type == DeviceType.tx ? Icons.cast_rounded : Icons.monitor_rounded,
+                          size: 16, color: d.type == DeviceType.tx ? Colors.purpleAccent : Colors.blueAccent),
+                      const SizedBox(width: 10),
+                      Text(d.name, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                      const Spacer(),
+                      Text(d.ip, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                    ],
+                  ),
+                )),
+                if (newDevices.length > 3)
+                  Text('+${newDevices.length - 3} more', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+              ],
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.greenAccent,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Got it', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _resultChip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold)),
+    );
   }
 
   Future<void> _adoptDevice(DiscoveredDevice dev) async {
     setState(() => dev.status = AdoptStatus.adopting);
-    await Future.delayed(const Duration(seconds: 2));
-    if (mounted) setState(() => dev.status = AdoptStatus.adopted);
+    
+    // Simulate adoption handshake delay
+    await Future.delayed(const Duration(seconds: 1));
+    
+    if (mounted) {
+      // Execute the registry adoption in AppState
+      await AppState.instance.adoptDevice(
+        dev.mac.replaceAll(':', ''),
+        dev.name,
+        dev.ip,
+        dev.type,
+      );
+
+      setState(() => dev.status = AdoptStatus.adopted);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${dev.name} Adopted! Opening Hardware Config...'),
+          backgroundColor: Colors.greenAccent,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      // Wait for snackbar to be seen
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      if (mounted) {
+        // Tab index 3 is Configuration
+        AppState.instance.tabIndexNotifier.value = 3;
+      }
+    }
   }
 
   Color _signalColor(int signal) {
@@ -100,7 +316,8 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
     switch (type) {
       case DeviceType.rx: return Icons.monitor_rounded;
       case DeviceType.tx: return Icons.cast_rounded;
-      case DeviceType.unknown: return Icons.device_unknown_rounded;
+      case DeviceType.cx: return Icons.hub_rounded;
+      default: return Icons.device_unknown_rounded;
     }
   }
 
@@ -108,7 +325,8 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
     switch (type) {
       case DeviceType.rx: return 'RX';
       case DeviceType.tx: return 'TX';
-      case DeviceType.unknown: return '?';
+      case DeviceType.cx: return 'CX';
+      default: return '?';
     }
   }
 
@@ -116,7 +334,8 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
     switch (type) {
       case DeviceType.rx: return Colors.blueAccent;
       case DeviceType.tx: return Colors.purpleAccent;
-      case DeviceType.unknown: return Colors.grey;
+      case DeviceType.cx: return Colors.orangeAccent;
+      default: return Colors.grey;
     }
   }
 
@@ -150,6 +369,50 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
               _buildScanButton(),
             ],
           ),
+          const SizedBox(height: 16),
+
+          // ── WiFi Notice Banner ───────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.blueAccent.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.blueAccent.withValues(alpha: 0.3)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blueAccent.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.wifi_rounded, color: Colors.blueAccent, size: 18),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Connect to the AV System WiFi',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        'Make sure your phone is connected to the same WiFi network as the Netgear box before scanning.',
+                        style: TextStyle(color: Color(0xFF9E9E9E), fontSize: 11, height: 1.4),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 20),
 
           // ── Stats Row ───────────────────────────────────────────────────────
@@ -164,15 +427,34 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
           ),
           const SizedBox(height: 20),
 
-          // ── Radar Animation (when scanning) ─────────────────────────────────
+          // ── Radar Animation + Progress (when scanning) ──────────────────────
           if (_isScanning) _buildRadar(),
+          if (_isScanning) const SizedBox(height: 12),
+          if (_isScanning) Column(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: null, // indeterminate — scanning all IPs at once
+                  minHeight: 4,
+                  backgroundColor: Colors.grey.shade800,
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.greenAccent),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _scanStatus.isEmpty ? 'Scanning network...' : _scanStatus,
+                style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
+              ),
+            ],
+          ),
           if (_isScanning) const SizedBox(height: 20),
 
           // ── Filter Chips ─────────────────────────────────────────────────────
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
-              children: ['All', 'RX', 'TX', 'Unknown'].map((f) {
+              children: ['All', 'RX', 'TX', 'CX'].map((f) {
                 final selected = _filterType == f;
                 return Padding(
                   padding: const EdgeInsets.only(right: 8),
@@ -200,18 +482,48 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
           ),
           const SizedBox(height: 16),
 
-          // ── Device List ───────────────────────────────────────────────────────
-          if (_filteredDevices.isEmpty)
+          // ── Device List / Empty State ─────────────────────────────────────────
+          if (_filteredDevices.isEmpty && !_isScanning)
             Center(
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 40),
+                padding: const EdgeInsets.symmetric(vertical: 48),
                 child: Column(
                   children: [
-                    Icon(Icons.wifi_off_rounded, size: 48, color: Colors.grey.shade700),
-                    const SizedBox(height: 12),
-                    Text('No devices found', style: TextStyle(color: Colors.grey.shade600, fontSize: 14)),
-                    const SizedBox(height: 4),
-                    Text('Tap "Start Scan" to search', style: TextStyle(color: Colors.grey.shade700, fontSize: 12)),
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade900,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.wifi_find_rounded, size: 40, color: Colors.grey.shade600),
+                    ),
+                    const SizedBox(height: 16),
+                    Text('No Devices Found',
+                        style: TextStyle(color: Colors.grey.shade400, fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Text('Make sure your phone is on the\nsame WiFi as your AV devices.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+                    const SizedBox(height: 20),
+                    GestureDetector(
+                      onTap: _startScan,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.greenAccent.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.greenAccent.withValues(alpha: 0.4)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.radar_rounded, color: Colors.greenAccent, size: 16),
+                            SizedBox(width: 8),
+                            Text('Try Again', style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -228,10 +540,13 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
       onTap: _isScanning ? null : _startScan,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(
           color: _isScanning ? Colors.grey.shade800 : Colors.greenAccent,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: _isScanning ? [] : [
+            BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.3), blurRadius: 12, offset: const Offset(0, 4)),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -363,7 +678,23 @@ class _DiscoveryModuleState extends State<DiscoveryModule>
                         ],
                       ),
                       const SizedBox(height: 2),
-                      Text(dev.ip, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                      Row(
+                        children: [
+                          Text(dev.ip, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                          if (dev.type == DeviceType.cx) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.orangeAccent.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.2)),
+                              ),
+                              child: const Text('AUTO-IP DISCOVERED', style: TextStyle(color: Colors.orangeAccent, fontSize: 8, fontWeight: FontWeight.w900)),
+                            ),
+                          ],
+                        ],
+                      ),
                     ],
                   ),
                 ),

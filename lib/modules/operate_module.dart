@@ -3,8 +3,8 @@ import 'package:video_player/video_player.dart';
 import '../theme/app_theme.dart';
 import '../models/device_model.dart';
 import '../logic/app_state.dart';
-
-enum ViewMode { largeGrid, compactGrid, list }
+import '../services/av_command_service.dart';
+import 'snapshots_module.dart';
 
 class OperateModule extends StatefulWidget {
   const OperateModule({super.key});
@@ -15,6 +15,7 @@ class OperateModule extends StatefulWidget {
 
 class _OperateModuleState extends State<OperateModule> {
   ViewMode _viewMode = ViewMode.largeGrid;
+  bool _isSourcesView = false;
 
   Map<String, String?> get _activeRoutes => AppState.instance.activeRoutes;
   List<Device> get _sources => AppState.instance.sources;
@@ -47,8 +48,6 @@ class _OperateModuleState extends State<OperateModule> {
   }
 
   void _syncDestControllers() {
-    bool changed = false;
-
     // Keep all active source videos playing continuously
     // Don't dispose sources just because they're unrouted
     final Set<String> allSourceIds = _sources.map((s) => s.id).toSet();
@@ -66,14 +65,17 @@ class _OperateModuleState extends State<OperateModule> {
         } catch (_) {}
         ctrl.dispose();
         _sourcePool.remove(srcId);
-        changed = true;
       }
     }
 
-    if (changed && mounted) {
+    if (mounted) {
+      // Clear image cache to help with thumbnail transitions if needed
       PaintingBinding.instance.imageCache.clear();
+      // Always call setState when sync is triggered (e.g. from stateVersionNotifier)
+      // This ensures the UI picks up updated routing paths from AppState
       setState(() {});
     }
+
     // Ensure all sources are playing
     if (!_initQueueRunning) _runInitQueue();
   }
@@ -186,31 +188,43 @@ class _OperateModuleState extends State<OperateModule> {
   }
 
   void _changeRoute(String destId, String sourceId) {
-    // Sharing means we don't necessarily dispose here,
-    // _syncDestControllers will handle ref-counting/cleanup
+    // Update UI state immediately
     AppState.instance.activeRoutes[destId] = sourceId;
     AppState.instance.notifyListeners();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.bolt_rounded, color: Colors.black, size: 20),
-            const SizedBox(width: 10),
-            Text(
-              'Matrix command executed instantly.',
-              style: const TextStyle(
+    // Look up the real IPs for TX and RX
+    final source = _sources.firstWhere((s) => s.id == sourceId);
+    final dest = _allDestinations.firstWhere((d) => d.id == destId);
+
+    // Fire the hardware command to both TX and RX in the background
+    AVCommandService.routeVideo(txIp: source.ip, rxIp: dest.ip).then((success) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                success ? Icons.bolt_rounded : Icons.warning_amber_rounded,
                 color: Colors.black,
-                fontWeight: FontWeight.bold,
+                size: 20,
               ),
-            ),
-          ],
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  success
+                      ? '${source.name} routed to ${dest.name}.'
+                      : 'UI updated — hardware unreachable.',
+                  style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: success ? Colors.greenAccent.shade400 : Colors.orangeAccent,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
         ),
-        backgroundColor: Colors.greenAccent.shade400,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-      ),
-    );
+      );
+    });
   }
 
   @override
@@ -225,17 +239,9 @@ class _OperateModuleState extends State<OperateModule> {
             Expanded(
               child: SingleChildScrollView(
                 padding: EdgeInsets.all(isMobile ? 12 : 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children:
-                      _destinationsByLocation.entries.map((entry) {
-                        return _buildLocationGroup(
-                          entry.key,
-                          entry.value,
-                          isMobile,
-                        );
-                      }).toList(),
-                ),
+                child: _isSourcesView 
+                  ? _buildSourcesList(isMobile)
+                  : _buildDestinationsList(isMobile),
               ),
             ),
           ],
@@ -244,74 +250,297 @@ class _OperateModuleState extends State<OperateModule> {
     );
   }
 
+  Widget _buildDestinationsList(bool isMobile) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children:
+          _destinationsByLocation.entries.map((entry) {
+            return _buildLocationGroup(
+              entry.key,
+              entry.value,
+              isMobile,
+            );
+          }).toList(),
+    );
+  }
+
+  Widget _buildSourcesList(bool isMobile) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Active Transmitters',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white70),
+        ),
+        const SizedBox(height: 16),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 400,
+            crossAxisSpacing: 16,
+            mainAxisSpacing: 16,
+            mainAxisExtent: 100,
+          ),
+          itemCount: _sources.length,
+          itemBuilder: (context, index) {
+            final source = _sources[index];
+            final routedCount = _activeRoutes.values.where((v) => v == source.id).length;
+            
+            return InkWell(
+              onTap: () => _showSourceRoutingSheet(source),
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.highlightGrey,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: Colors.purpleAccent.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.cast_rounded, color: Colors.purpleAccent),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(source.name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                          Text(source.ip, style: TextStyle(color: Colors.grey.shade500, fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: routedCount > 0 ? Colors.greenAccent.withValues(alpha: 0.1) : Colors.grey.shade900,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '$routedCount Active',
+                        style: TextStyle(
+                          color: routedCount > 0 ? Colors.greenAccent : Colors.grey,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
   Widget _buildControlHeader(bool isMobile) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: AppTheme.backgroundLight,
         border: Border(bottom: BorderSide(color: Colors.grey.shade900)),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Expanded(
-            child: Text(
-              'Displays',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          Container(
-            decoration: BoxDecoration(
-              color: AppTheme.highlightGrey,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade800),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _viewModeCapsule(ViewMode.largeGrid, Icons.grid_view_rounded),
-                Container(width: 1, height: 16, color: Colors.grey.shade800),
-                _viewModeCapsule(ViewMode.compactGrid, Icons.grid_on_rounded),
-                Container(width: 1, height: 16, color: Colors.grey.shade800),
-                _viewModeCapsule(ViewMode.list, Icons.view_list_rounded),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          isMobile
-              ? InkWell(
-                onTap: _showAddDestinationDialog,
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: AppTheme.accentWhite,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.add, color: Colors.black, size: 20),
-                ),
-              )
-              : ElevatedButton.icon(
-                onPressed: _showAddDestinationDialog,
-                icon: const Icon(Icons.add_circle_outline, size: 16),
-                label: const Text(
-                  'Add Display',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.accentWhite,
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+          Row(
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    const Text(
+                      'Operate',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade900,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        _isSourcesView ? '${_sources.length} Src' : '${_allDestinations.length} Disp',
+                        style: TextStyle(
+                          color: Colors.grey.shade400,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              IconButton(
+                onPressed: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SnapshotsModule()));
+                },
+                icon: const Icon(Icons.auto_awesome_motion_rounded, color: Colors.amberAccent, size: 20),
+                tooltip: 'Snapshots',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: AppTheme.highlightGrey,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _viewModeToggleCap('_isSourcesView', false, isMobile ? 'D' : 'Displays', Icons.monitor),
+                    _viewModeToggleCap('_isSourcesView', true, isMobile ? 'S' : 'Sources', Icons.cast),
+                  ],
+                ),
+              ),
+              if (!isMobile) ...[
+                const SizedBox(width: 12),
+                _buildViewModeSwitcher(),
+                const SizedBox(width: 12),
+                _buildQuickActions(),
+                const SizedBox(width: 12),
+                _buildAddButton(false),
+              ],
+            ],
+          ),
+          if (isMobile) ...[
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _buildViewModeSwitcher(),
+                _buildQuickActions(),
+                _buildAddButton(true),
+              ],
+            ),
+          ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildViewModeSwitcher() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.highlightGrey,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _viewModeCapsule(ViewMode.largeGrid, Icons.grid_view_rounded),
+          Container(width: 1, height: 16, color: Colors.grey.shade800),
+          _viewModeCapsule(ViewMode.compactGrid, Icons.grid_on_rounded),
+          Container(width: 1, height: 16, color: Colors.grey.shade800),
+          _viewModeCapsule(ViewMode.list, Icons.view_list_rounded),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickActions() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          onPressed: () async {
+            final now = DateTime.now();
+            await AppState.instance.addSnapshot({
+              'title': 'Quick Save ${now.hour}:${now.minute.toString().padLeft(2, '0')}',
+              'date': '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}, ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}',
+              'routes': AppState.instance.activeRoutes.length,
+              'matrix': Map<String, String?>.from(AppState.instance.activeRoutes),
+            });
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Quick Snapshot Created'), behavior: SnackBarBehavior.floating),
+              );
+            }
+          },
+          icon: const Icon(Icons.save_outlined, color: Colors.greenAccent, size: 20),
+          tooltip: 'Quick Save State',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          onPressed: () {
+            if (AppState.instance.savedSnapshots.isNotEmpty) {
+              final last = AppState.instance.savedSnapshots.first;
+              final dynamic matrixData = last['matrix'];
+              if (matrixData != null && matrixData is Map) {
+                AppState.instance.loadSnapshotRoutes(Map<String, String?>.from(matrixData));
+              }
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Recalled: ${last['title']}'), behavior: SnackBarBehavior.floating),
+              );
+            }
+          },
+          icon: const Icon(Icons.history_rounded, color: Colors.blueAccent, size: 20),
+          tooltip: 'Recall Last',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAddButton(bool isMobile) {
+    return GestureDetector(
+      onTap: _showAddDestinationDialog,
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: isMobile ? 10 : 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          boxShadow: [BoxShadow(color: Colors.white.withValues(alpha: 0.15), blurRadius: 8)],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.add_rounded, color: Colors.black, size: 16),
+            if (!isMobile) ...[
+              const SizedBox(width: 6),
+              const Text('Add Display', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _viewModeToggleCap(String property, bool value, String label, IconData icon) {
+    final isSelected = _isSourcesView == value;
+    return InkWell(
+      onTap: () => setState(() => _isSourcesView = value),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.grey.shade800 : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 14, color: isSelected ? Colors.white : Colors.grey),
+            const SizedBox(width: 6),
+            Text(label, style: TextStyle(color: isSelected ? Colors.white : Colors.grey, fontSize: 11, fontWeight: FontWeight.bold)),
+          ],
+        ),
       ),
     );
   }
@@ -706,20 +935,17 @@ class _OperateModuleState extends State<OperateModule> {
             child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           TextButton(
-            onPressed: () {
-              setState(() {
-                if (_selectedDestinationId == dest.id) _selectedDestinationId = null;
-                AppState.instance.destinationsByLocation[dest.location]?.removeWhere((d) => d.id == dest.id);
-                // Clean up empty locations if needed
-                if (AppState.instance.destinationsByLocation[dest.location]?.isEmpty ?? false) {
-                  AppState.instance.destinationsByLocation.remove(dest.location);
-                }
-                AppState.instance.stateVersionNotifier.value++;
-              });
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Removed ${dest.name}')),
-              );
+            onPressed: () async {
+              if (_selectedDestinationId == dest.id) {
+                setState(() => _selectedDestinationId = null);
+              }
+              await AppState.instance.removeDevice(dest.id, dest.location);
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Removed ${dest.name}')),
+                );
+              }
             },
             child: const Text('Remove', style: TextStyle(color: Colors.redAccent)),
           ),
@@ -778,6 +1004,26 @@ class _OperateModuleState extends State<OperateModule> {
                 ),
               ),
             ),
+          if (showOverlay && routedSource != null)
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  routedSource.name,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
         ],
       );
     }
@@ -791,16 +1037,108 @@ class _OperateModuleState extends State<OperateModule> {
             Icon(Icons.monitor_outlined, size: 24, color: Colors.grey.shade700),
             if (showOverlay) ...[
               const SizedBox(height: 4),
-              Text(
+              const Text(
                 'NO SIGNAL',
                 style: TextStyle(
-                  color: Colors.grey.shade600,
+                  color: Colors.grey,
                   fontSize: 10,
                   fontWeight: FontWeight.bold,
                 ),
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showSourceRoutingSheet(Device source) {
+    final Map<String, bool> selectedDests = {};
+    for (final dest in _allDestinations) {
+      selectedDests[dest.id] = _activeRoutes[dest.id] == source.id;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => Container(
+          height: MediaQuery.of(context).size.height * 0.8,
+          decoration: const BoxDecoration(
+            color: AppTheme.backgroundLight,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 12),
+                width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(24),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Route ${source.name}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                          Text('Select receivers to switch to this source', style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                    ElevatedButton(
+                      onPressed: () {
+                        for (final entry in selectedDests.entries) {
+                          if (entry.value) {
+                            AppState.instance.activeRoutes[entry.key] = source.id;
+                            // Fire hardware command for each selected destination
+                            final dest = _allDestinations.firstWhere((d) => d.id == entry.key);
+                            AVCommandService.routeVideo(txIp: source.ip, rxIp: dest.ip);
+                          } else if (_activeRoutes[entry.key] == source.id) {
+                            AppState.instance.activeRoutes[entry.key] = null;
+                          }
+                        }
+                        AppState.instance.notifyListeners();
+                        Navigator.pop(ctx);
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.greenAccent, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                      child: const Text('Apply Routes', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(color: Colors.white12),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  children: _destinationsByLocation.entries.map((group) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                          child: Text(group.key, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent, fontSize: 12)),
+                        ),
+                        ...group.value.map((dest) {
+                          final isSelected = selectedDests[dest.id] ?? false;
+                          return CheckboxListTile(
+                            title: Text(dest.name, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                            subtitle: Text(dest.ip, style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                            value: isSelected,
+                            activeColor: Colors.greenAccent,
+                            checkColor: Colors.black,
+                            onChanged: (val) => setModalState(() => selectedDests[dest.id] = val ?? false),
+                          );
+                        }),
+                      ],
+                    );
+                  }).toList(),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

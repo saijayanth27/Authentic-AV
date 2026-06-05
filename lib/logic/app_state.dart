@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../models/device_model.dart';
+import '../services/database_service.dart';
 
 class UserAccount {
   final String id;
@@ -16,16 +17,17 @@ class UserAccount {
 }
 
 class AppState extends ChangeNotifier {
-  // Singleton instance
   static final AppState instance = AppState._internal();
   AppState._internal() {
     initializeSampleData();
   }
 
+  bool isLoaded = false;
+
   // Active Device Registries
   final List<Device> sources = [];
   final Map<String, List<Device>> destinationsByLocation = {};
-  
+
   // Security/RBAC Authentication Registry
   final List<UserAccount> users = [];
 
@@ -35,159 +37,190 @@ class AppState extends ChangeNotifier {
   // Saved routing configurations
   final List<Map<String, dynamic>> savedSnapshots = [];
 
-  // Global Notifiers for listeners (Snapshots, Operate)
+  // Global Notifiers for listeners
   final ValueNotifier<int> stateVersionNotifier = ValueNotifier<int>(0);
+  final ValueNotifier<int> tabIndexNotifier = ValueNotifier<int>(0);
 
-  // Initialize with the standard dummy data if empty
+  // Track the most recently adopted device to auto-focus in Configuration
+  String? lastAdoptedDeviceId;
+
+  // Mock Firmware Repository
+  final List<Map<String, dynamic>> firmwareDownloads = [
+    {'version': 'v2.4.1', 'status': 'Available', 'size': '45MB'},
+    {'version': 'v2.3.9', 'status': 'Installed', 'size': '42MB'},
+  ];
+
+  String firmwareDeploymentStatus = 'Idle';
+
   void initializeSampleData() {
-    if (sources.isNotEmpty) return;
-
-    // Standard Sample Sources
-    sources.addAll([
-      Device(
-        id: 's1',
-        name: 'Netflix Box',
-        ip: '192.168.1.101',
-        type: DeviceType.tx,
-        status: DeviceStatus.online,
-        location: 'AV Rack 1',
-        tags: ['Movies', 'Streaming'],
-        videoUrl: 'assets/videos/demo_video_1.mp4',
-        previewUrl: 'netflix.png',
-      ),
-      Device(
-        id: 's2',
-        name: 'YouTube TV',
-        ip: '192.168.1.102',
-        type: DeviceType.tx,
-        status: DeviceStatus.online,
-        location: 'AV Rack 1',
-        tags: ['Live Stream', 'Streaming'],
-        videoUrl: 'assets/videos/demo_video_2.mp4',
-        previewUrl: 'youtube.png',
-      ),
-      Device(
-        id: 's3',
-        name: 'Hulu Live TV',
-        ip: '192.168.1.103',
-        type: DeviceType.tx,
-        status: DeviceStatus.online,
-        location: 'Breakroom AV',
-        tags: ['Live TV', 'Streaming'],
-        videoUrl: 'assets/videos/demo_video_3.mp4',
-        previewUrl: 'hdmi.png',
-      ),
-      Device(
-        id: 's4',
-        name: 'Twitch Studio',
-        ip: '192.168.1.104',
-        type: DeviceType.tx,
-        status: DeviceStatus.online,
-        location: 'Server Room',
-        tags: ['Gaming', 'Live Stream'],
-        videoUrl: 'assets/videos/demo_video_4.mp4',
-        previewUrl: 'auth.av_icon_v2.png',
-      ),
-      Device(
-        id: 's5',
-        name: 'Disney+ Stream',
-        ip: '192.168.1.105',
-        type: DeviceType.tx,
-        status: DeviceStatus.online,
-        location: 'Theater Room',
-        videoUrl: 'assets/videos/demo_video_5.mp4',
-        tags: ['Movies', 'Streaming'],
-        previewUrl: 'auth.av_icon_v2.png',
-      ),
-      Device(
-        id: 's6',
-        name: 'Apple TV 4K',
-        ip: '192.168.1.106',
-        type: DeviceType.tx,
-        status: DeviceStatus.online,
-        location: 'AV Rack 2',
-        videoUrl: 'assets/videos/demo_video_6.mp4',
-        tags: ['Movies', 'Streaming'],
-        previewUrl: 'appletv.png',
-      ),
-    ]);
-    
-    // Inject Mock Security Database
+    if (users.isNotEmpty) return;
     users.addAll([
       UserAccount(id: 'u1', username: 'admin', password: '123', role: 'Admin'),
       UserAccount(id: 'u2', username: 'operator', password: '123', role: 'User'),
     ]);
-
-    // Standard Demo Destinations (mapped to sources s1 and s2 for sharing stability)
-    final sampleDestinations = [
-      Device(id: 'd1', name: 'Lobby Display', ip: '192.168.1.51', type: DeviceType.rx, status: DeviceStatus.online, location: 'Guest Areas'),
-      Device(id: 'd2', name: 'Kitchen TV', ip: '192.168.1.52', type: DeviceType.rx, status: DeviceStatus.online, location: 'Guest Areas'),
-      Device(id: 'd3', name: 'Master Bed Room', ip: '192.168.1.53', type: DeviceType.rx, status: DeviceStatus.online, location: 'Private Quarters'),
-      Device(id: 'd4', name: 'Main Hall', ip: '192.168.1.54', type: DeviceType.rx, status: DeviceStatus.online, location: 'Private Quarters'),
-      Device(id: 'd5', name: 'Patio Screen', ip: '192.168.1.55', type: DeviceType.rx, status: DeviceStatus.online, location: 'Outdoor'),
-    ];
-
-    for (var dest in sampleDestinations) {
-      if (!destinationsByLocation.containsKey(dest.location)) {
-        destinationsByLocation[dest.location] = [];
-      }
-      destinationsByLocation[dest.location]!.add(dest);
-    }
-
-    // Standard Sample Snapshots
-    if (savedSnapshots.isEmpty) {
-      savedSnapshots.addAll([
-        {
-          'title': 'Game Day Setup',
-          'date': '26/02/2026, 20:44:58',
-          'routes': 4,
-          'matrix': {
-            'd1': 's1', // Twitch to Main Display
-            'd2': 's1', // Twitch to Confidence
-            'd3': 's4', // Xbox to Lobby L
-            'd4': 's4', // Xbox to Lobby R
-          }
-        },
-        {
-          'title': 'Happy Hour Config',
-          'date': '25/02/2026, 20:44:58',
-          'routes': 3,
-          'matrix': {
-            'd1': 's2', // Spotify to Main Display
-            'd3': 's2', // Spotify to Lobby L
-            'd4': 's2', // Spotify to Lobby R
-          }
-        },
-      ]);
-    }
-
-    // Assign default routing paths so all videos play by default
-    if (activeRoutes.isEmpty) {
-      final allDests = destinationsByLocation.values.expand((element) => element).toList();
-      for (int i = 0; i < allDests.length; i++) {
-        final sourceIndex = i % sources.length;
-        activeRoutes[allDests[i].id] = sources[sourceIndex].id;
-      }
-    }
   }
 
-  // Forces listeners to rebuild UI
+  // ── Database Load (called once on app start) ───────────────────────────────
+
+  Future<void> loadFromDatabase() async {
+    if (isLoaded) return;
+
+    final db = DatabaseService.instance;
+
+    // Load adopted devices
+    final devices = await db.loadAdoptedDevices();
+    for (final device in devices) {
+      if (device.type == DeviceType.tx) {
+        if (!sources.any((s) => s.id == device.id)) {
+          sources.add(device);
+        }
+      } else {
+        final loc = device.location;
+        destinationsByLocation.putIfAbsent(loc, () => []);
+        if (!destinationsByLocation[loc]!.any((d) => d.id == device.id)) {
+          destinationsByLocation[loc]!.add(device);
+        }
+      }
+    }
+
+    // Load active routes
+    final routes = await db.loadActiveRoutes();
+    activeRoutes.addAll(routes);
+
+    // Load snapshots
+    final snapshots = await db.loadSnapshots();
+    savedSnapshots.addAll(snapshots);
+
+    isLoaded = true;
+    notifyListeners();
+  }
+
+  // ── Save helpers ───────────────────────────────────────────────────────────
+
+  Future<void> _persistRoutes() async {
+    await DatabaseService.instance.saveActiveRoutes(activeRoutes);
+  }
+
+  // ── Overridden notifyListeners — persists routes on every change ───────────
+
   @override
   void notifyListeners() {
     stateVersionNotifier.value++;
     super.notifyListeners();
+    _persistRoutes();
   }
 
-  // Clear all routes
   void clearAllRoutes() {
     activeRoutes.clear();
     notifyListeners();
   }
 
-  // Snapshot Recall Method
   void loadSnapshotRoutes(Map<String, String?> snapshotMapping) {
     activeRoutes.clear();
     activeRoutes.addAll(snapshotMapping);
     notifyListeners();
+  }
+
+  void toggleWink(String deviceId) {
+    final device = [...sources, ...destinationsByLocation.values.expand((d) => d)]
+        .firstWhere((d) => d.id == deviceId);
+    device.isWinking = !device.isWinking;
+    notifyListeners();
+
+    if (device.isWinking) {
+      Future.delayed(const Duration(seconds: 10), () {
+        device.isWinking = false;
+        notifyListeners();
+      });
+    }
+  }
+
+  // ── Device Adoption — saves to DB immediately ──────────────────────────────
+
+  static const _demoVideos = [
+    'assets/videos/demo_video_1.mp4',
+    'assets/videos/demo_video_2.mp4',
+    'assets/videos/demo_video_3.mp4',
+    'assets/videos/demo_video_4.mp4',
+    'assets/videos/demo_video_5.mp4',
+    'assets/videos/demo_video_6.mp4',
+  ];
+
+  Future<void> adoptDevice(String id, String name, String ip, DeviceType type) async {
+    // Assign a unique demo video per TX device (cycles through 6 available videos)
+    String? videoUrl;
+    if (type == DeviceType.tx) {
+      videoUrl = _demoVideos[sources.length % _demoVideos.length];
+    }
+
+    final newDevice = Device(
+      id: id,
+      name: name,
+      ip: ip,
+      type: type,
+      status: DeviceStatus.online,
+      location: 'Unassigned',
+      tags: ['Newly Adopted'],
+      previewUrl: type == DeviceType.tx ? 'hdmi.png' : 'monitor.png',
+      videoUrl: videoUrl,
+    );
+
+    if (type == DeviceType.tx) {
+      if (!sources.any((s) => s.id == id)) {
+        sources.add(newDevice);
+      }
+    } else {
+      const location = 'Unassigned';
+      destinationsByLocation.putIfAbsent(location, () => []);
+      if (!destinationsByLocation[location]!.any((d) => d.id == id)) {
+        destinationsByLocation[location]!.add(newDevice);
+      }
+    }
+
+    await DatabaseService.instance.saveAdoptedDevice(newDevice);
+    lastAdoptedDeviceId = id;
+    notifyListeners();
+  }
+
+  // ── Device Removal — deletes from DB immediately ───────────────────────────
+
+  Future<void> removeDevice(String deviceId, String location) async {
+    sources.removeWhere((d) => d.id == deviceId);
+    destinationsByLocation[location]?.removeWhere((d) => d.id == deviceId);
+    if (destinationsByLocation[location]?.isEmpty ?? false) {
+      destinationsByLocation.remove(location);
+    }
+    await DatabaseService.instance.deleteAdoptedDevice(deviceId);
+    notifyListeners();
+  }
+
+  // ── Snapshots — saves to DB immediately ───────────────────────────────────
+
+  Future<void> addSnapshot(Map<String, dynamic> snapshot) async {
+    await DatabaseService.instance.saveSnapshot(snapshot);
+    // Reload from DB to get the real auto-incremented id
+    final snapshots = await DatabaseService.instance.loadSnapshots();
+    savedSnapshots
+      ..clear()
+      ..addAll(snapshots);
+    stateVersionNotifier.value++;
+    super.notifyListeners();
+  }
+
+  Future<void> deleteSnapshot(int index) async {
+    final snap = savedSnapshots[index];
+    final snapId = snap['id'];
+    if (snapId != null) {
+      await DatabaseService.instance.deleteSnapshot(snapId as int);
+    }
+    savedSnapshots.removeAt(index);
+    stateVersionNotifier.value++;
+    super.notifyListeners();
+  }
+
+  Future<bool> updateStreamSelection(String deviceId, String streamId) async {
+    debugPrint('API CALL: updateStreamSelection(device: $deviceId, stream: $streamId)');
+    await Future.delayed(const Duration(milliseconds: 500));
+    return true;
   }
 }

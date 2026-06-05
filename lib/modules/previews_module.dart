@@ -3,7 +3,6 @@ import 'package:video_player/video_player.dart';
 import '../theme/app_theme.dart';
 import '../models/device_model.dart';
 import '../logic/app_state.dart';
-import 'operate_module.dart' show ViewMode;
 
 class PreviewsModule extends StatefulWidget {
   const PreviewsModule({super.key});
@@ -16,6 +15,7 @@ class _PreviewsModuleState extends State<PreviewsModule> {
   final Map<String, VideoPlayerController> _destControllers = {};
 
   final Map<String, bool> _expandedLocations = {};
+  final Map<String, String> _controllerSourceIds = {};
   ViewMode _viewMode = ViewMode.largeGrid;
 
   List<Device> get _allDestinations =>
@@ -53,12 +53,22 @@ class _PreviewsModuleState extends State<PreviewsModule> {
       if (routeId != null) {
         final source = _sources.firstWhere((s) => s.id == routeId, orElse: () => _sources.first);
         if (source.videoUrl != null) {
-          if (_destControllers[dest.id] == null) {
-            final url = source.videoUrl!;
+          final existingCtrl = _destControllers[dest.id];
+          final existingSourceId = _controllerSourceIds[dest.id];
+          final url = source.videoUrl!;
+
+          // FIX: If no controller OR the source ID has changed, recreate the controller
+          if (existingCtrl == null || existingSourceId != routeId) {
+            // Cleanup old if exists
+            existingCtrl?.dispose();
+            
             final ctrl = url.startsWith('http')
                 ? VideoPlayerController.networkUrl(Uri.parse(url), videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true))
                 : VideoPlayerController.asset(url, videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true));
+            
             _destControllers[dest.id] = ctrl;
+            _controllerSourceIds[dest.id] = routeId;
+            
             ctrl.initialize().then((_) {
               if (mounted) setState(() {});
               ctrl.setLooping(true);
@@ -66,18 +76,16 @@ class _PreviewsModuleState extends State<PreviewsModule> {
               ctrl.play();
             });
           } else {
-            // Already exists, just ensure it's still playing
-            final ctrl = _destControllers[dest.id]!;
-            if (ctrl.value.isInitialized && !ctrl.value.isPlaying) {
-              try {
-                ctrl.play();
-              } catch (_) {}
+            // Already correct source, ensure playing
+            if (!existingCtrl.value.isPlaying && existingCtrl.value.isInitialized) {
+              try { existingCtrl.play(); } catch (_) {}
             }
           }
         }
       } else {
         _destControllers[dest.id]?.dispose();
         _destControllers.remove(dest.id);
+        _controllerSourceIds.remove(dest.id);
       }
     }
   }
@@ -180,20 +188,27 @@ class _PreviewsModuleState extends State<PreviewsModule> {
             Padding(
               padding: const EdgeInsets.all(12),
               child: _viewMode != ViewMode.list
-                  ? GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: _viewMode == ViewMode.largeGrid ? 320 : 160,
-                        crossAxisSpacing: isMobile ? 12 : 16,
-                        mainAxisSpacing: isMobile ? 12 : 16,
-                        mainAxisExtent: _viewMode == ViewMode.largeGrid ? 210 : 180,
-                      ),
-                      itemCount: devices.length,
-                      itemBuilder: (ctx, i) {
-                        return _buildGridCard(devices[i]);
-                      },
-                    )
+                    ? GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: _viewMode == ViewMode.largeGrid 
+                              ? (isMobile ? 1 : 2) 
+                              : (_viewMode == ViewMode.highDensity ? (isMobile ? 2 : 4) : (isMobile ? 2 : 3)),
+                          crossAxisSpacing: _viewMode == ViewMode.highDensity ? 8 : 16,
+                          mainAxisSpacing: _viewMode == ViewMode.highDensity ? 8 : 16,
+                          childAspectRatio: _viewMode == ViewMode.largeGrid 
+                              ? 1.5 
+                              : (_viewMode == ViewMode.highDensity ? 1.5 : 1.0),
+                        ),
+                        itemCount: devices.length,
+                        itemBuilder: (ctx, i) {
+                          if (_viewMode == ViewMode.highDensity) {
+                            return _buildHighDensityCard(devices[i]);
+                          }
+                          return _buildGridCard(devices[i]);
+                        },
+                      )
                   : ListView.builder(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
@@ -208,39 +223,62 @@ class _PreviewsModuleState extends State<PreviewsModule> {
   }
 
   Widget _buildControlHeader(bool isMobile) {
+    // For small phone screens, ALWAYS use a two-row layout to prevent clipping
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final bool forceTwoRows = screenWidth < 500;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         color: AppTheme.backgroundLight,
         border: Border(bottom: BorderSide(color: Colors.grey.shade900)),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Expanded(
-            child: Text(
-              'Live Previews',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              overflow: TextOverflow.ellipsis,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Live Previews',
+                  style: TextStyle(
+                    fontSize: 22, 
+                    fontWeight: FontWeight.w900, 
+                    color: AppTheme.accentWhite,
+                    letterSpacing: -0.8,
+                  ),
+                ),
+              ),
+              if (!forceTwoRows) _buildViewModeSwitcher(),
+            ],
           ),
-          Container(
-            decoration: BoxDecoration(
-              color: AppTheme.highlightGrey,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey.shade800),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _viewModeCapsule(ViewMode.largeGrid, Icons.grid_view_rounded),
-                Container(width: 1, height: 16, color: Colors.grey.shade800),
-                _viewModeCapsule(ViewMode.compactGrid, Icons.grid_on_rounded),
-                Container(width: 1, height: 16, color: Colors.grey.shade800),
-                _viewModeCapsule(ViewMode.list, Icons.view_list_rounded),
-              ],
-            ),
-          ),
+          if (forceTwoRows) ...[
+            const SizedBox(height: 16),
+            Center(child: _buildViewModeSwitcher()),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildViewModeSwitcher() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.highlightGrey,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _viewModeCapsule(ViewMode.largeGrid, Icons.grid_view_rounded),
+          Container(width: 1, height: 16, color: Colors.grey.shade800),
+          _viewModeCapsule(ViewMode.compactGrid, Icons.grid_on_rounded),
+          Container(width: 1, height: 16, color: Colors.grey.shade800),
+          _viewModeCapsule(ViewMode.highDensity, Icons.apps_rounded),
+          Container(width: 1, height: 16, color: Colors.grey.shade800),
+          _viewModeCapsule(ViewMode.list, Icons.view_list_rounded),
         ],
       ),
     );
@@ -355,6 +393,39 @@ class _PreviewsModuleState extends State<PreviewsModule> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildHighDensityCard(Device dest) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.white12, width: 1),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          _buildMonitorContent(dest),
+          Positioned(
+            bottom: 4,
+            left: 4,
+            right: 4,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(2),
+              ),
+              child: Text(
+                dest.name,
+                style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

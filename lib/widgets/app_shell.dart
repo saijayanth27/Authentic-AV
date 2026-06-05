@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../logic/app_state.dart';
 import '../theme/app_theme.dart';
 import '../modules/operate_module.dart';
 import '../modules/previews_module.dart';
@@ -35,6 +36,26 @@ class _AppShellState extends State<AppShell> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    AppState.instance.tabIndexNotifier.addListener(_syncTabIndex);
+  }
+
+  void _syncTabIndex() {
+    if (mounted) {
+      setState(() {
+        _selectedIndex = AppState.instance.tabIndexNotifier.value;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    AppState.instance.tabIndexNotifier.removeListener(_syncTabIndex);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final List<Map<String, dynamic>> visibleItems = widget.isAdmin
         ? _allNavItems
@@ -55,25 +76,26 @@ class _AppShellState extends State<AppShell> {
         elevation: 0,
         title: Row(
           children: [
-            const SizedBox(width: 12),
+            const SizedBox(width: 4),
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'Authentic AV',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'New York'),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Authentic AV',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade500, fontWeight: FontWeight.w500, letterSpacing: 0.5),
+                      ),
+                      Icon(Icons.chevron_right_rounded, size: 12, color: Colors.grey.shade600),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  Icon(Icons.chevron_right_rounded, size: 16, color: Colors.grey.shade600),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Text(
-                      visibleItems[_selectedIndex]['label'],
-                      style: TextStyle(fontSize: 16, color: AppTheme.accentWhite.withValues(alpha: 0.9), fontWeight: FontWeight.w500),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                  Text(
+                    visibleItems[_selectedIndex]['label'],
+                    style: const TextStyle(fontSize: 17, color: AppTheme.accentWhite, fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
